@@ -27,8 +27,10 @@
 
 #include "memory/padded.hpp"
 #include "oops/markWord.hpp"
+#include "oops/oopHandle.hpp"
 #include "runtime/basicLock.hpp"
 #include "runtime/handles.hpp"
+#include "runtime/mutex.hpp"
 #include "utilities/growableArray.hpp"
 
 class LogStream;
@@ -91,6 +93,7 @@ class ObjectSynchronizer : AllStatic {
   // This is the "slow path" version of monitor enter and exit.
   static void enter(Handle obj, BasicLock* lock, JavaThread* current);
   static void exit(oop obj, BasicLock* lock, JavaThread* current);
+  static void exit(Handle obj, BasicLock* lock, JavaThread* current);
 
   // Used only to handle jni locks or other unmatched monitor enter/exit
   // Internally they will use heavy weight monitor.
@@ -205,6 +208,48 @@ class ObjectLocker : public StackObj {
   void wait(TRAPS)  { ObjectSynchronizer::wait(_obj, 0, CHECK); } // wait forever
   void notify_all(TRAPS)  { ObjectSynchronizer::notifyall(_obj, CHECK); }
   void wait_uninterruptibly(JavaThread* current) { ObjectSynchronizer::wait_uninterruptibly(_obj, current); }
+};
+
+class SystemDictMonitor : public CHeapObj<mtWisp> {
+  protected:
+    Monitor*  _monitor;
+  public:
+    SystemDictMonitor(Monitor* monitor): _monitor(monitor) { }
+    virtual void lock(BasicLock* lock, Thread* current)    {
+        _monitor->lock();
+    }
+    virtual void unlock(BasicLock* lock, Thread* current)  {
+        _monitor->unlock();
+    }
+    virtual void wait(BasicLock* lock, Thread* current)    {
+        _monitor->wait();
+    }
+    virtual void notify_all(Thread* current)               {
+        _monitor->notify_all();
+    }
+    virtual void create_obj_lock(Thread* current) {
+		ShouldNotReachHere();
+    }
+    Monitor* monitor()         const    { return _monitor;               }
+    virtual oop obj()          const    { return NULL;                   }
+    virtual bool is_obj_lock() const    { return false;                  }
+};
+
+class SystemDictObjMonitor : public SystemDictMonitor {
+  private:
+    // Prefer to use obj lock. Only use monitor when obj lock is not set.
+    OopHandle       _obj;
+  public:
+    SystemDictObjMonitor(Monitor* monitor) : SystemDictMonitor(monitor) {
+      assert(UseWispMonitor, "SystemDictObjMonitor if only for UseWispMonitor");
+    }
+    virtual void lock(BasicLock* lock, Thread* current);
+    virtual void unlock(BasicLock* lock, Thread* current);
+    virtual void wait(BasicLock* lock, Thread* current);
+    virtual void notify_all(Thread* current);
+    virtual void create_obj_lock(Thread* current);
+    virtual oop obj() const;
+    virtual bool is_obj_lock() const;
 };
 
 #endif // SHARE_RUNTIME_SYNCHRONIZER_HPP

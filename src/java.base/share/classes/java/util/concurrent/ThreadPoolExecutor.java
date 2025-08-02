@@ -1328,6 +1328,7 @@ public class ThreadPoolExecutor extends AbstractExecutorService {
     public void execute(Runnable command) {
         if (command == null)
             throw new NullPointerException();
+
         /*
          * Proceed in 3 steps:
          *

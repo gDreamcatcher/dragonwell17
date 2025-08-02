@@ -43,6 +43,7 @@
 #include "oops/oop.inline.hpp"
 #include "oops/typeArrayOop.inline.hpp"
 #include "prims/jvmtiExport.hpp"
+#include "runtime/coroutine.hpp"
 #include "runtime/fieldDescriptor.inline.hpp"
 #include "runtime/handles.inline.hpp"
 #include "runtime/javaCalls.hpp"
@@ -1112,7 +1113,12 @@ static oop invoke(InstanceKlass* klass,
   // All oops (including receiver) is passed in as Handles. An potential oop is returned as an
   // oop (i.e., NOT as an handle)
   JavaValue result(rtype);
-  JavaCalls::call(&result, method, &java_args, THREAD);
+
+  {
+    WispPostStealHandleUpdateMark w((Thread *&)THREAD, const_cast<methodHandle*>(&reflected_method), &method);
+    EnableStealMark p(THREAD);
+    JavaCalls::call(&result, method, &java_args, THREAD);
+  }
 
   if (HAS_PENDING_EXCEPTION) {
     // Method threw an exception; wrap it in an InvocationTargetException
@@ -1158,6 +1164,9 @@ oop Reflection::invoke_method(oop method_mirror, Handle receiver, objArrayHandle
   }
   methodHandle method(THREAD, m);
 
+  // Coroutine work steal support
+  WispPostStealHandleUpdateMark w((Thread *&)THREAD, &method);
+
   return invoke(klass, method, receiver, override, ptypes, rtype, args, true, THREAD);
 }
 
@@ -1182,6 +1191,9 @@ oop Reflection::invoke_constructor(oop constructor_mirror, objArrayHandle args, 
   // Create new instance (the receiver)
   klass->check_valid_for_instantiation(false, CHECK_NULL);
   Handle receiver = klass->allocate_instance_handle(CHECK_NULL);
+
+  // Coroutine work steal support
+  WispPostStealHandleUpdateMark w((Thread *&)THREAD, &method);
 
   // Ignore result from call and return receiver
   invoke(klass, method, receiver, override, ptypes, T_VOID, args, false, CHECK_NULL);

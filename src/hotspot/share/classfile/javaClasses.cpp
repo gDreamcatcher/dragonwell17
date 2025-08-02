@@ -1765,6 +1765,7 @@ int java_lang_Thread::_stackSize_offset;
 int java_lang_Thread::_tid_offset;
 int java_lang_Thread::_thread_status_offset;
 int java_lang_Thread::_park_blocker_offset;
+int java_lang_Thread::_resourceContainer_offset;
 
 #define THREAD_FIELDS_DO(macro) \
   macro(_name_offset,          k, vmSymbols::name_name(), string_signature, false); \
@@ -1779,7 +1780,8 @@ int java_lang_Thread::_park_blocker_offset;
   macro(_stackSize_offset,     k, "stackSize", long_signature, false); \
   macro(_tid_offset,           k, "tid", long_signature, false); \
   macro(_thread_status_offset, k, "threadStatus", int_signature, false); \
-  macro(_park_blocker_offset,  k, "parkBlocker", object_signature, false)
+  macro(_park_blocker_offset,  k, "parkBlocker", object_signature, false); \
+  macro(_resourceContainer_offset,    k, "resourceContainer", resourcecontainer_signature, false); \
 
 void java_lang_Thread::compute_offsets() {
   assert(_group_offset == 0, "offsets should be initialized only once");
@@ -1833,6 +1835,10 @@ oop java_lang_Thread::name(oop java_thread) {
   return java_thread->obj_field(_name_offset);
 }
 
+
+oop java_lang_Thread::resourceContainer(oop java_thread) {
+  return java_thread->obj_field(_resourceContainer_offset);
+}
 
 void java_lang_Thread::set_name(oop java_thread, oop name) {
   java_thread->obj_field_put(_name_offset, name);
@@ -4740,6 +4746,225 @@ void java_nio_Buffer::compute_offsets() {
   BUFFER_FIELDS_DO(FIELD_COMPUTE_OFFSET);
 }
 
+/* stack manipulation */
+
+#define COROUTINEBASE_FIELDS_DO(macro) \
+  macro(_native_coroutine_offset, ik, vmSymbols::nativeCoroutine_name(), long_signature, false)
+
+int java_dyn_CoroutineBase::_native_coroutine_offset = 0;
+
+void java_dyn_CoroutineBase::compute_offsets() {
+  InstanceKlass* ik = vmClasses::java_dyn_CoroutineBase_klass();
+  if (ik != NULL) {
+    COROUTINEBASE_FIELDS_DO(FIELD_COMPUTE_OFFSET);
+  }
+}
+
+#if INCLUDE_CDS
+void java_dyn_CoroutineBase::serialize_offsets(SerializeClosure* f) {
+  COROUTINEBASE_FIELDS_DO(FIELD_SERIALIZE_OFFSET);
+}
+#endif
+
+jlong java_dyn_CoroutineBase::native_coroutine(oop obj) {
+  return obj->long_field(_native_coroutine_offset);
+}
+
+void java_dyn_CoroutineBase::set_native_coroutine(oop obj, jlong value) {
+  obj->long_field_put(_native_coroutine_offset, value);
+}
+
+#define WISPENGINE_FIELDS_DO(macro) \
+  macro(_isInCritical_offset, ik, vmSymbols::isInCritical_name(), bool_signature, false)
+
+int com_alibaba_wisp_engine_WispCarrier::_isInCritical_offset = 0;
+
+void com_alibaba_wisp_engine_WispCarrier::compute_offsets() {
+  InstanceKlass* ik = vmClasses::com_alibaba_wisp_engine_WispCarrier_klass();
+  assert(ik != NULL, "WispEngine_klass is null");
+  WISPENGINE_FIELDS_DO(FIELD_COMPUTE_OFFSET);
+}
+
+#if INCLUDE_CDS
+void com_alibaba_wisp_engine_WispCarrier::serialize_offsets(SerializeClosure* f) {
+  WISPENGINE_FIELDS_DO(FIELD_SERIALIZE_OFFSET);
+}
+#endif
+
+jboolean com_alibaba_wisp_engine_WispCarrier::in_critical(oop obj) {
+  return obj->bool_field(_isInCritical_offset);
+}
+
+
+#define RCM_FIELDS_DO(macro) \
+  macro(_id_offset,      k,   "id",     long_signature,  false);
+
+int com_alibaba_rcm_internal_AbstractResourceContainer::_id_offset = 0;
+
+long com_alibaba_rcm_internal_AbstractResourceContainer::get_id(oop obj) {
+  return obj->long_field(_id_offset);
+}
+
+
+void com_alibaba_rcm_internal_AbstractResourceContainer::compute_offsets() {
+  InstanceKlass *k = vmClasses::com_alibaba_rcm_internal_AbstractResourceContainer_klass();
+  assert(k != NULL, "AbstractResourceContainer is null");
+  RCM_FIELDS_DO(FIELD_COMPUTE_OFFSET);
+}
+
+#if INCLUDE_CDS
+void com_alibaba_rcm_internal_AbstractResourceContainer::serialize_offsets(SerializeClosure* f) {
+  RCM_FIELDS_DO(FIELD_SERIALIZE_OFFSET);
+}
+#endif
+
+int com_alibaba_wisp_engine_WispTask::_jvmParkStatus_offset = 0;
+int com_alibaba_wisp_engine_WispTask::_jdkParkStatus_offset = 0;
+int com_alibaba_wisp_engine_WispTask::_id_offset = 0;
+int com_alibaba_wisp_engine_WispTask::_threadWrapper_offset = 0;
+int com_alibaba_wisp_engine_WispTask::_interrupted_offset = 0;
+int com_alibaba_wisp_engine_WispTask::_activeCount_offset = 0;
+int com_alibaba_wisp_engine_WispTask::_stealCount_offset = 0;
+int com_alibaba_wisp_engine_WispTask::_stealFailureCount_offset = 0;
+int com_alibaba_wisp_engine_WispTask::_preemptCount_offset = 0;
+int com_alibaba_wisp_engine_WispTask::_shutdownPending_offset = 0;
+int com_alibaba_wisp_engine_WispTask::_controlGroup_offset = 0;
+int com_alibaba_wisp_engine_WispTask::_ttr_offset = 0;
+
+#define WISPTASK_FIELDS_DO(macro) \
+  macro(_jvmParkStatus_offset,      ik, vmSymbols::jvmParkStatus_name(),     int_signature,  false); \
+  macro(_jdkParkStatus_offset,      ik, vmSymbols::jdkParkStatus_name(),     int_signature,  false); \
+  macro(_id_offset,                 ik, vmSymbols::id_name(),                int_signature,  false); \
+  macro(_threadWrapper_offset,      ik, vmSymbols::threadWrapper_name(),     thread_signature, false); \
+  macro(_interrupted_offset,        ik, vmSymbols::interrupted_name(),       int_signature,  false); \
+  macro(_activeCount_offset,        ik, vmSymbols::activeCount_name(),       int_signature,  false); \
+  macro(_stealCount_offset,         ik, vmSymbols::stealCount_name(),        int_signature,  false); \
+  macro(_stealFailureCount_offset,  ik, vmSymbols::stealFailureCount_name(), int_signature,  false); \
+  macro(_preemptCount_offset,       ik, vmSymbols::preemptCount_name(),      int_signature,  false); \
+  macro(_shutdownPending_offset,    ik, vmSymbols::shutdownPending_name(),   bool_signature, false); \
+  macro(_controlGroup_offset,       ik, vmSymbols::controlGroup_name(),      controlGroup_signature, false); \
+  macro(_ttr_offset,                ik, vmSymbols::ttr_name(),               long_signature, false);
+
+void com_alibaba_wisp_engine_WispTask::compute_offsets() {
+  InstanceKlass* ik = vmClasses::com_alibaba_wisp_engine_WispTask_klass();
+  assert(ik != NULL, "WispTask_klass is null");
+  WISPTASK_FIELDS_DO(FIELD_COMPUTE_OFFSET);
+}
+
+#if INCLUDE_CDS
+void com_alibaba_wisp_engine_WispTask::serialize_offsets(SerializeClosure* f) {
+  WISPTASK_FIELDS_DO(FIELD_SERIALIZE_OFFSET);
+}
+#endif
+
+oop com_alibaba_wisp_engine_WispTask::get_controlGroup(oop obj) {
+  return obj->obj_field(_controlGroup_offset);
+}
+
+long com_alibaba_wisp_engine_WispTask::get_ttr(oop obj) {
+  return obj->long_field(_ttr_offset);
+}
+
+#define WISPCG_FIELDS_DO(macro) \
+  macro(_cpuLimit_offset,      k, vmSymbols::cpuLimit_name(),     controlGroup_Limit_signature,  false);
+
+int com_alibaba_wisp_engine_WispControlGroup::_cpuLimit_offset = 0;
+
+#if INCLUDE_CDS
+void com_alibaba_wisp_engine_WispControlGroup::serialize_offsets(SerializeClosure* f) {
+  WISPCG_FIELDS_DO(FIELD_SERIALIZE_OFFSET);
+}
+#endif
+
+void com_alibaba_wisp_engine_WispControlGroup::compute_offsets() {
+  InstanceKlass *k = vmClasses::com_alibaba_wisp_engine_WispControlGroup_klass();
+  assert(k != NULL, "WispControlGroup_klass is null");
+  WISPCG_FIELDS_DO(FIELD_COMPUTE_OFFSET);
+}
+
+oop com_alibaba_wisp_engine_WispControlGroup::get_cpuLimit(oop obj) {
+  return obj->obj_field(_cpuLimit_offset);
+}
+
+#define WISPCG_CPULIMIT_FIELDS_DO(macro) \
+  macro(_cfsPeriod_offset,      k, vmSymbols::cfsPeriod_name(),     long_signature,  false); \
+  macro(_cfsQuota_offset,       k, vmSymbols::cfsQuota_name(),      long_signature,  false);
+
+int com_alibaba_wisp_engine_WispControlGroup_CpuLimit::_cfsPeriod_offset = 0;
+int com_alibaba_wisp_engine_WispControlGroup_CpuLimit::_cfsQuota_offset = 0;
+
+void com_alibaba_wisp_engine_WispControlGroup_CpuLimit::compute_offsets() {
+  InstanceKlass *k = vmClasses::com_alibaba_wisp_engine_WispControlGroup_CpuLimit_klass();
+  assert(k != NULL, "WispControlGroup$CpuLimit_klass is null");
+  WISPCG_CPULIMIT_FIELDS_DO(FIELD_COMPUTE_OFFSET);
+}
+
+#if INCLUDE_CDS
+void com_alibaba_wisp_engine_WispControlGroup_CpuLimit::serialize_offsets(SerializeClosure* f) {
+  WISPCG_CPULIMIT_FIELDS_DO(FIELD_SERIALIZE_OFFSET);
+}
+#endif
+
+long com_alibaba_wisp_engine_WispControlGroup_CpuLimit::get_cfsPeriod(oop obj) {
+  return obj->long_field(_cfsPeriod_offset);
+}
+
+long com_alibaba_wisp_engine_WispControlGroup_CpuLimit::get_cfsQuota(oop obj) {
+  return obj->long_field(_cfsQuota_offset);
+}
+
+void com_alibaba_wisp_engine_WispTask::set_jvmParkStatus(oop obj, jint status) {
+  obj->int_field_put(_jvmParkStatus_offset, status);
+}
+
+int com_alibaba_wisp_engine_WispTask::get_jvmParkStatus(oop obj) {
+  return obj->int_field(_jvmParkStatus_offset);
+}
+
+int com_alibaba_wisp_engine_WispTask::get_jdkParkStatus(oop obj) {
+  return obj->int_field(_jdkParkStatus_offset);
+}
+
+int com_alibaba_wisp_engine_WispTask::get_preemptCount(oop obj) {
+  return obj->int_field(_preemptCount_offset);
+}
+
+void com_alibaba_wisp_engine_WispTask::set_preemptCount(oop obj, jint count) {
+  obj->int_field_put(_preemptCount_offset, count);
+}
+
+int com_alibaba_wisp_engine_WispTask::get_id(oop obj) {
+  return obj->int_field(_id_offset);
+}
+
+oop com_alibaba_wisp_engine_WispTask::get_threadWrapper(oop obj) {
+  return obj->obj_field(_threadWrapper_offset);
+}
+
+int com_alibaba_wisp_engine_WispTask::get_interrupted(oop obj) {
+  return obj->int_field(_interrupted_offset);
+}
+
+void com_alibaba_wisp_engine_WispTask::set_interrupted(oop obj, jint interrupted) {
+  obj->int_field_put(_interrupted_offset, interrupted);
+}
+
+int com_alibaba_wisp_engine_WispTask::get_activeCount(oop obj) {
+  return obj->int_field(_activeCount_offset);
+}
+
+int com_alibaba_wisp_engine_WispTask::get_stealCount(oop obj) {
+  return obj->int_field(_stealCount_offset);
+}
+
+int com_alibaba_wisp_engine_WispTask::get_stealFailureCount(oop obj) {
+  return obj->int_field(_stealFailureCount_offset);
+}
+
+bool com_alibaba_wisp_engine_WispTask::get_shutdownPending(oop obj) {
+  return obj->bool_field(_shutdownPending_offset);
+}
+
 #if INCLUDE_CDS
 void java_nio_Buffer::serialize_offsets(SerializeClosure* f) {
   BUFFER_FIELDS_DO(FIELD_SERIALIZE_OFFSET);
@@ -5071,6 +5296,8 @@ void java_lang_InternalError::serialize_offsets(SerializeClosure* f) {
 
 // Compute field offsets of all the classes in this file
 void JavaClasses::compute_offsets() {
+  BASIC_JAVA_CLASSES_DO_PART_COROUTINE(DO_COMPUTE_OFFSETS);
+
   if (UseSharedSpaces) {
     JVMTI_ONLY(assert(JvmtiExport::is_early_phase() && !(JvmtiExport::should_post_class_file_load_hook() &&
                                                          JvmtiExport::has_early_class_hook_env()),
@@ -5093,6 +5320,7 @@ void JavaClasses::compute_offsets() {
 
 void JavaClasses::serialize_offsets(SerializeClosure* soc) {
   BASIC_JAVA_CLASSES_DO(DO_SERIALIZE_OFFSETS);
+  BASIC_JAVA_CLASSES_DO_PART_COROUTINE(DO_SERIALIZE_OFFSETS);
 }
 #endif
 

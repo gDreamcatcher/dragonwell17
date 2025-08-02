@@ -55,6 +55,9 @@ import static java.net.StandardProtocolFamily.INET;
 import static java.net.StandardProtocolFamily.INET6;
 import static java.net.StandardProtocolFamily.UNIX;
 
+import com.alibaba.wisp.engine.WispEngine;
+import jdk.internal.access.SharedSecrets;
+import jdk.internal.access.WispEngineAccess;
 import sun.net.NetHooks;
 import sun.net.ext.ExtendedSocketOptions;
 
@@ -66,6 +69,8 @@ class ServerSocketChannelImpl
     extends ServerSocketChannel
     implements SelChImpl
 {
+    private static final WispEngineAccess WEA = SharedSecrets.getWispEngineAccess();
+
     // Used to make native close and configure calls
     private static final NativeDispatcher nd = new SocketDispatcher();
 
@@ -128,6 +133,7 @@ class ServerSocketChannelImpl
             this.fd = Net.serverSocket(family, true);
         }
         this.fdVal = IOUtil.fdVal(fd);
+        configureAsNonBlockingForWisp(fd);
     }
 
     ServerSocketChannelImpl(SelectorProvider sp,
@@ -155,6 +161,7 @@ class ServerSocketChannelImpl
                 }
             }
         }
+        configureAsNonBlockingForWisp(fd);
     }
 
     /**
@@ -485,7 +492,7 @@ class ServerSocketChannelImpl
     {
         try {
             // newly accepted socket is initially in blocking mode
-            IOUtil.configureBlocking(newfd, true);
+            configureAsNonBlockingForWisp(newfd);
 
             // check permitted to accept connections from the remote address
             if (isNetSocket()) {

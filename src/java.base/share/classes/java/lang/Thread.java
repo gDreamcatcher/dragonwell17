@@ -25,6 +25,7 @@
 
 package java.lang;
 
+import java.dyn.CoroutineSupport;
 import java.lang.ref.Reference;
 import java.lang.ref.ReferenceQueue;
 import java.lang.ref.WeakReference;
@@ -42,6 +43,15 @@ import jdk.internal.misc.TerminatingThreadLocal;
 import jdk.internal.reflect.CallerSensitive;
 import jdk.internal.reflect.Reflection;
 import jdk.internal.vm.annotation.IntrinsicCandidate;
+import com.alibaba.rcm.ResourceContainer;
+import com.alibaba.rcm.internal.AbstractResourceContainer;
+import com.alibaba.rcm.internal.RCMUnsafe;
+import com.alibaba.wisp.engine.WispEngine;
+import com.alibaba.wisp.engine.WispTask;
+import jdk.internal.access.SharedSecrets;
+import jdk.internal.access.WispEngineAccess;
+import jdk.internal.misc.TerminatingThreadLocal;
+import jdk.internal.misc.VM;
 import sun.nio.ch.Interruptible;
 import sun.security.util.SecurityConstants;
 
@@ -203,6 +213,11 @@ public class Thread implements Runnable {
     private final long stackSize;
 
     /*
+     * JVM-private state that persists after native thread termination.
+     */
+    private long nativeParkEventPointer;
+
+    /*
      * Thread ID
      */
     private final long tid;
@@ -218,6 +233,19 @@ public class Thread implements Runnable {
      * Java thread status for tools, default indicates thread 'not yet started'
      */
     private volatile int threadStatus;
+
+    /**
+    /**
+     * The thread attached {@code ResourceContainer}
+     */
+    AbstractResourceContainer resourceContainer;
+
+    /**
+     * {@code ResourceContainer} inherited from parent
+     */
+    AbstractResourceContainer inheritedResourceContainer;
+
+
 
     /**
      * The argument supplied to the current call to
@@ -260,12 +288,68 @@ public class Thread implements Runnable {
     public static final int MAX_PRIORITY = 10;
 
     /**
+     * The coroutine support of the thread
+     */
+    private CoroutineSupport coroutineSupport;
+
+    WispTask wispTask;
+
+    volatile boolean wispIsAlive;
+
+    /**
+     * @return the coroutine support of the thread
+     */
+    public CoroutineSupport getCoroutineSupport() {
+        if (coroutineSupport != null) {
+            return coroutineSupport;
+        }
+
+        Thread t = currentThread0();
+        return t == this ? null : t.getCoroutineSupport();
+    }
+
+    /**
+     * initialize the coroutine support of the thread
+     */
+    private void initializeCoroutineSupport() {
+        if (coroutineSupport == null) {
+            coroutineSupport = new CoroutineSupport(this);
+        }
+    }
+
+    private void destroyCoroutineSupport() {
+        try {
+            if (coroutineSupport != null) {
+                if (WEA != null) {
+                    WEA.destroy();
+                }
+                coroutineSupport.drain();
+            }
+        } catch (Throwable t) {
+            t.printStackTrace();
+        }
+    }
+
+    /**
      * Returns a reference to the currently executing thread object.
      *
+     * Returns a thread wrapper of the currently executing wispTask if
+     * WispEngine.transparentWispSwitch() is on.
+     * 
      * @return  the currently executing thread.
      */
+    public static Thread currentThread() {
+        if (WEA != null) {
+            return WEA.getCurrentTask().getThreadWrapper();
+        }
+        return currentThread0();
+    }
+
+    /**
+     * Always return the underlying Java thread.
+     */
     @IntrinsicCandidate
-    public static native Thread currentThread();
+    static native Thread currentThread0();
 
     /**
      * A hint to the scheduler that the current thread is willing to yield
@@ -283,7 +367,19 @@ public class Thread implements Runnable {
      * concurrency control constructs such as the ones in the
      * {@link java.util.concurrent.locks} package.
      */
-    public static native void yield();
+    public static void yield() {
+        if (WEA != null) {
+            WEA.yield();
+        } else {
+            yield0();
+        }
+    }
+
+    /**
+     * Always use the thread semantics.
+     */
+    static native void yield0();
+
 
     /**
      * Causes the currently executing thread to sleep (temporarily cease
@@ -302,7 +398,20 @@ public class Thread implements Runnable {
      *          <i>interrupted status</i> of the current thread is
      *          cleared when this exception is thrown.
      */
-    public static native void sleep(long millis) throws InterruptedException;
+    public static void sleep(long millis) throws InterruptedException {
+        if (WEA != null) {
+            if (Thread.interrupted()) {
+                throw new InterruptedException("sleep interrupted");
+            }
+            WEA.sleep(millis);
+            if (Thread.interrupted()) {
+                throw new InterruptedException("sleep interrupted");
+            }
+            return;
+        } else {
+            sleep0(millis);
+        }
+    }
 
     /**
      * Causes the currently executing thread to sleep (temporarily cease
@@ -343,6 +452,11 @@ public class Thread implements Runnable {
 
         sleep(millis);
     }
+
+    /**
+     * Always block the native thread
+     */
+    private static native void sleep0(long millis) throws InterruptedException;
 
     /**
      * Indicates that the caller is momentarily unable to progress, until the
@@ -459,6 +573,15 @@ public class Thread implements Runnable {
 
         /* Set thread ID */
         this.tid = nextThreadID();
+
+        // com.alibaba.rcm API
+        this.resourceContainer = AbstractResourceContainer.root();
+        if (SharedSecrets.getRCMAccess().getResourceContainerInheritancePredicate(
+                parent.resourceContainer).test(this)) {
+            this.inheritedResourceContainer = parent.resourceContainer;
+        } else {
+            this.inheritedResourceContainer = AbstractResourceContainer.root();
+        }
     }
 
     /**
@@ -806,7 +929,10 @@ public class Thread implements Runnable {
 
         boolean started = false;
         try {
-            start0();
+            if (!(WEA != null && WispEngine.enableThreadAsWisp() &&
+                    WEA.tryStartThreadAsWisp(this, target, this.stackSize))) {
+                start0();
+            }
             started = true;
         } finally {
             try {
@@ -845,7 +971,7 @@ public class Thread implements Runnable {
      * This method is called by the system to give a Thread
      * a chance to clean up before it actually exits.
      */
-    private void exit() {
+    void exit() {
         if (threadLocals != null && TerminatingThreadLocal.REGISTRY.isPresent()) {
             TerminatingThreadLocal.threadTerminated();
         }
@@ -999,16 +1125,23 @@ public class Thread implements Runnable {
             synchronized (blockerLock) {
                 Interruptible b = blocker;
                 if (b != null) {
-                    interrupted = true;
-                    interrupt0();  // inform VM of interrupt
+                    if (WEA != null && wispTask != null) {
+                        WEA.interrupt(wispTask);
+                    } else {
+                        interrupted = true;
+                        interrupt0();           // Just to set the interrupt flag
+                    }
                     b.interrupt(this);
                     return;
                 }
             }
         }
-        interrupted = true;
-        // inform VM of interrupt
-        interrupt0();
+        if (WEA != null && wispTask != null) {
+            WEA.interrupt(wispTask);
+        } else {
+            interrupted = true;
+            interrupt0();
+        }
     }
 
     /**
@@ -1025,13 +1158,19 @@ public class Thread implements Runnable {
      * @revised 6.0, 14
      */
     public static boolean interrupted() {
-        Thread t = currentThread();
-        boolean interrupted = t.interrupted;
+        Thread current = currentThread0();
+        if (WEA != null) {
+            WispTask task = WEA.getCurrentTask();
+            if (task != null) {
+                return WEA.testInterruptedAndClear(task, true);
+            }
+        }
+        boolean interrupted = current.interrupted;
         // We may have been interrupted the moment after we read the field,
         // so only clear the field if we saw that it was set and will return
         // true; otherwise we could lose an interrupt.
         if (interrupted) {
-            t.interrupted = false;
+            current.interrupted = false;
             clearInterruptEvent();
         }
         return interrupted;
@@ -1047,6 +1186,9 @@ public class Thread implements Runnable {
      * @revised 6.0, 14
      */
     public boolean isInterrupted() {
+        if (WEA != null && wispTask != null) {
+            return WEA.testInterruptedAndClear(wispTask, false);
+        }
         return interrupted;
     }
 
@@ -1058,8 +1200,14 @@ public class Thread implements Runnable {
      *          {@code false} otherwise.
      */
     public final boolean isAlive() {
-        return eetop != 0;
+        // return eetop != 0;
+        if (WEA != null && wispIsAlive) {
+            return true;
+        }
+        return isAlive0();
     }
+
+    private final native boolean isAlive0();
 
     /**
      * Suspends this thread.
@@ -1594,7 +1742,29 @@ public class Thread implements Runnable {
      * @since 1.5
      */
     public StackTraceElement[] getStackTrace() {
-        if (this != Thread.currentThread()) {
+        boolean slowPath;
+        if (WEA != null) {
+            WispTask task = this.wispTask;
+            if (task == null) {
+                // When we create a thread, coroutine will not be created immediately.
+                // So if we take the stack trace at once, it will NCE.
+                // See: NullStackTrace.java and 6571589, Thread return an array which size is 0.
+                return new StackTraceElement[0];
+            }
+            if (!WEA.runningAsCoroutine(this)) {
+                slowPath = this != Thread.currentThread();
+            } else {
+                boolean isCurrentTask = WEA.getCurrentTask() == task;
+                slowPath = !isCurrentTask;
+                if (!WEA.isThreadTask(task) && !isCurrentTask) {
+                    return WEA.getStackTrace(task);
+                }
+            }
+        } else {
+            slowPath = this != Thread.currentThread();
+        }
+
+        if (slowPath) {
             // check for getStackTrace permission
             @SuppressWarnings("removal")
             SecurityManager security = System.getSecurityManager();
@@ -1871,9 +2041,17 @@ public class Thread implements Runnable {
      * @since 1.5
      */
     public State getState() {
+        if (WEA != null) {
+            return WEA.getState(this);
+        }
         // get current thread state
         return jdk.internal.misc.VM.toThreadState(threadStatus);
     }
+
+    /**
+     * @return if this thread is still executing the same JNI code
+     */
+    native boolean isInSameNative();
 
     // Added in JSR-166
 
@@ -2106,4 +2284,15 @@ public class Thread implements Runnable {
     private native void interrupt0();
     private static native void clearInterruptEvent();
     private native void setNativeName(String name);
+
+    // prevent load Wisp classes accidentally
+    private static WispEngineAccess WEA;
+
+    static void wispBooted() {
+        if (!WispEngine.transparentWispSwitch()) {
+            // assert in this class will crash jvm
+            throw new AssertionError();
+        }
+        WEA = SharedSecrets.getWispEngineAccess();
+    }
 }

@@ -25,6 +25,7 @@
 
 package java.net;
 
+import com.alibaba.wisp.engine.WispEngine;
 import java.io.FileDescriptor;
 import java.io.IOException;
 import java.nio.channels.ServerSocketChannel;
@@ -34,6 +35,7 @@ import java.util.Collections;
 
 import sun.security.util.SecurityConstants;
 import sun.net.PlatformSocketImpl;
+import sun.nio.ch.WispServerSocketImpl;
 
 /**
  * This class implements server sockets. A server socket waits for
@@ -77,6 +79,9 @@ import sun.net.PlatformSocketImpl;
  * @since   1.0
  */
 public class ServerSocket implements java.io.Closeable {
+
+    private WispServerSocketImpl asyncImpl;
+
     /**
      * Various states of this socket.
      */
@@ -103,8 +108,28 @@ public class ServerSocket implements java.io.Closeable {
      * @since 12
      */
     protected ServerSocket(SocketImpl impl) {
+        this(impl, false);
+    }
+
+    /**
+     * Creates a server socket with a user-specified {@code SocketImpl}.
+     *
+     * @param      impl an instance of a SocketImpl to use on the ServerSocket.
+     * @param      dummy tells whether impl is dummy.
+     *
+     * @throws     NullPointerException if impl is {@code null}.
+     *
+     * @throws     SecurityException if a security manager is set and
+     *             its {@code checkPermission} method doesn't allow
+     *             {@code NetPermission("setSocketImpl")}.
+     * @since 12
+     */
+    protected ServerSocket(SocketImpl impl, boolean dummy) {
         Objects.requireNonNull(impl);
         checkPermission();
+        if (WispEngine.transparentWispSwitch() && !dummy) {
+            throw new UnsupportedOperationException();
+        }
         this.impl = impl;
     }
 
@@ -124,6 +149,10 @@ public class ServerSocket implements java.io.Closeable {
      * @revised 1.4
      */
     public ServerSocket() throws IOException {
+        if (WispEngine.transparentWispSwitch()) {
+            asyncImpl = new WispServerSocketImpl();
+            return;
+        }
         setImpl();
     }
 
@@ -264,7 +293,11 @@ public class ServerSocket implements java.io.Closeable {
      * @since   1.1
      */
     public ServerSocket(int port, int backlog, InetAddress bindAddr) throws IOException {
-        setImpl();
+        if (WispEngine.transparentWispSwitch()) {
+            asyncImpl = new WispServerSocketImpl();
+        } else {
+            setImpl();
+        }
         if (port < 0 || port > 0xFFFF)
             throw new IllegalArgumentException(
                        "Port value out of range: " + port);
@@ -290,12 +323,18 @@ public class ServerSocket implements java.io.Closeable {
      * @since 1.4
      */
     SocketImpl getImpl() throws SocketException {
+        if (WispEngine.transparentWispSwitch()) {
+            throw new UnsupportedOperationException();
+        }
         if (!created)
             createImpl();
         return impl;
     }
 
     private void setImpl() {
+        if (WispEngine.transparentWispSwitch()) {
+            throw new UnsupportedOperationException();
+        }
         SocketImplFactory factory = ServerSocket.factory;
         if (factory != null) {
             impl = factory.createSocketImpl();
@@ -311,6 +350,9 @@ public class ServerSocket implements java.io.Closeable {
      * @since 1.4
      */
     void createImpl() throws SocketException {
+        if (WispEngine.transparentWispSwitch()) {
+            throw new UnsupportedOperationException();
+        }
         if (impl == null)
             setImpl();
         try {
@@ -380,6 +422,10 @@ public class ServerSocket implements java.io.Closeable {
             throw new SocketException("Unresolved address");
         if (backlog < 1)
           backlog = 50;
+        if (WispEngine.transparentWispSwitch()) {
+            asyncImpl.bind(endpoint, backlog);
+            return;
+        }
         try {
             @SuppressWarnings("removal")
             SecurityManager security = System.getSecurityManager();
@@ -416,6 +462,9 @@ public class ServerSocket implements java.io.Closeable {
      * @see SecurityManager#checkConnect
      */
     public InetAddress getInetAddress() {
+        if (WispEngine.transparentWispSwitch()) {
+            return asyncImpl.getInetAddress();
+        }
         if (!isBound())
             return null;
         try {
@@ -446,6 +495,9 @@ public class ServerSocket implements java.io.Closeable {
      *          -1 if the socket is not bound yet.
      */
     public int getLocalPort() {
+        if (WispEngine.transparentWispSwitch()) {
+            return asyncImpl.getLocalPort();
+        }
         if (!isBound())
             return -1;
         try {
@@ -528,6 +580,9 @@ public class ServerSocket implements java.io.Closeable {
             throw new SocketException("Socket is closed");
         if (!isBound())
             throw new SocketException("Socket is not bound yet");
+        if (WispEngine.transparentWispSwitch()) {
+            return asyncImpl.accept();
+        }
         Socket s = new Socket((SocketImpl) null);
         implAccept(s);
         return s;
@@ -567,6 +622,9 @@ public class ServerSocket implements java.io.Closeable {
      * @revised 1.4
      */
     protected final void implAccept(Socket s) throws IOException {
+        if (WispEngine.transparentWispSwitch()) {
+            throw new UnsupportedOperationException();
+        }
         SocketImpl si = s.impl;
 
         // Socket has no SocketImpl
@@ -711,6 +769,9 @@ public class ServerSocket implements java.io.Closeable {
      * @revised 1.4
      */
     public void close() throws IOException {
+        if (WispEngine.transparentWispSwitch()) {
+            asyncImpl.close();
+        }
         synchronized(closeLock) {
             if (isClosed())
                 return;
@@ -750,6 +811,9 @@ public class ServerSocket implements java.io.Closeable {
      * @since 1.4
      */
     public boolean isBound() {
+        if (WispEngine.transparentWispSwitch()) {
+            return asyncImpl.isBound();
+        }
         return bound;
     }
 
@@ -760,6 +824,9 @@ public class ServerSocket implements java.io.Closeable {
      * @since 1.4
      */
     public boolean isClosed() {
+        if (WispEngine.transparentWispSwitch()) {
+            return asyncImpl.isClosed();
+        }
         synchronized(closeLock) {
             return closed;
         }
@@ -788,6 +855,10 @@ public class ServerSocket implements java.io.Closeable {
             throw new SocketException("Socket is closed");
         if (timeout < 0)
             throw new IllegalArgumentException("timeout < 0");
+        if (WispEngine.transparentWispSwitch()) {
+            asyncImpl.setSoTimeout(timeout);
+            return;
+        }
         getImpl().setOption(SocketOptions.SO_TIMEOUT, timeout);
     }
 
@@ -802,6 +873,9 @@ public class ServerSocket implements java.io.Closeable {
     public synchronized int getSoTimeout() throws IOException {
         if (isClosed())
             throw new SocketException("Socket is closed");
+        if (WispEngine.transparentWispSwitch()) {
+            return asyncImpl.getSoTimeout();
+        }
         Object o = getImpl().getOption(SocketOptions.SO_TIMEOUT);
         /* extra type safety */
         if (o instanceof Integer) {
@@ -850,6 +924,10 @@ public class ServerSocket implements java.io.Closeable {
     public void setReuseAddress(boolean on) throws SocketException {
         if (isClosed())
             throw new SocketException("Socket is closed");
+        if (WispEngine.transparentWispSwitch()) {
+            asyncImpl.setReuseAddress(on);
+            return;
+        }
         getImpl().setOption(SocketOptions.SO_REUSEADDR, Boolean.valueOf(on));
     }
 
@@ -866,6 +944,9 @@ public class ServerSocket implements java.io.Closeable {
     public boolean getReuseAddress() throws SocketException {
         if (isClosed())
             throw new SocketException("Socket is closed");
+        if (WispEngine.transparentWispSwitch()) {
+            return asyncImpl.getReuseAddress();
+        }
         return ((Boolean) (getImpl().getOption(SocketOptions.SO_REUSEADDR))).booleanValue();
     }
 
@@ -885,6 +966,9 @@ public class ServerSocket implements java.io.Closeable {
      */
     @SuppressWarnings("removal")
     public String toString() {
+        if (WispEngine.transparentWispSwitch()) {
+            return asyncImpl.toString();
+        }
         if (!isBound())
             return "ServerSocket[unbound]";
         InetAddress in;
@@ -937,6 +1021,9 @@ public class ServerSocket implements java.io.Closeable {
      */
     @Deprecated(since = "17")
     public static synchronized void setSocketFactory(SocketImplFactory fac) throws IOException {
+        if (WispEngine.transparentWispSwitch()) {
+            throw new UnsupportedOperationException();
+        }
         if (factory != null) {
             throw new SocketException("factory already defined");
         }
@@ -990,6 +1077,10 @@ public class ServerSocket implements java.io.Closeable {
         }
         if (isClosed())
             throw new SocketException("Socket is closed");
+         if (WispEngine.transparentWispSwitch()) {
+             asyncImpl.setReceiveBufferSize(size);
+             return;
+         }
         getImpl().setOption(SocketOptions.SO_RCVBUF, size);
     }
 
@@ -1011,6 +1102,9 @@ public class ServerSocket implements java.io.Closeable {
     throws SocketException{
         if (isClosed())
             throw new SocketException("Socket is closed");
+        if (WispEngine.transparentWispSwitch()) {
+            return asyncImpl.getReceiveBufferSize();
+        }
         int result = 0;
         Object o = getImpl().getOption(SocketOptions.SO_RCVBUF);
         if (o instanceof Integer) {
@@ -1097,7 +1191,11 @@ public class ServerSocket implements java.io.Closeable {
         Objects.requireNonNull(name);
         if (isClosed())
             throw new SocketException("Socket is closed");
-        getImpl().setOption(name, value);
+        if (WispEngine.transparentWispSwitch()) {
+            getChannel().setOption(name, value);
+        } else {
+            getImpl().setOption(name, value);
+        }
         return this;
     }
 
@@ -1128,7 +1226,7 @@ public class ServerSocket implements java.io.Closeable {
         Objects.requireNonNull(name);
         if (isClosed())
             throw new SocketException("Socket is closed");
-        return getImpl().getOption(name);
+        return WispEngine.transparentWispSwitch() ? getChannel().getOption(name) : getImpl().getOption(name);
     }
 
     // cache of unmodifiable impl options. Possibly set racy, in impl we trust

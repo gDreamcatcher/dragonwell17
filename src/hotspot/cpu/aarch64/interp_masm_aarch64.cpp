@@ -434,14 +434,27 @@ void InterpreterMacroAssembler::jump_from_interpreted(Register method, Register 
 
   if (JvmtiExport::can_post_interpreter_events()) {
     Label run_compiled_code;
+    Label coroutine_skip_interpret;
     // JVMTI events, such as single-stepping, are implemented partly by avoiding running
     // compiled code in threads for which the event is enabled.  Check here for
     // interp_only_mode if these events CAN be enabled.
     ldrw(rscratch1, Address(rthread, JavaThread::interp_only_mode_offset()));
     cbzw(rscratch1, run_compiled_code);
+    if (EnableCoroutine) {
+      ldrh(rscratch1, Address(method, Method::intrinsic_id_offset_in_bytes()));
+      subs(zr, rscratch1, static_cast<int>(vmIntrinsics::_switchTo));
+      br(Assembler::EQ, coroutine_skip_interpret);
+      subs(zr, rscratch1, static_cast<int>(vmIntrinsics::_switchToAndExit));
+      br(Assembler::EQ, coroutine_skip_interpret);
+      subs(zr, rscratch1, static_cast<int>(vmIntrinsics::_switchToAndTerminate));
+      br(Assembler::EQ, coroutine_skip_interpret);
+    }
     ldr(rscratch1, Address(method, Method::interpreter_entry_offset()));
     br(rscratch1);
     bind(run_compiled_code);
+    if (EnableCoroutine) {
+      bind(coroutine_skip_interpret);
+    }
   }
 
   ldr(rscratch1, Address(method, Method::from_interpreted_offset()));
@@ -852,7 +865,11 @@ void InterpreterMacroAssembler::unlock_object(Register lock_reg)
   assert(lock_reg == c_rarg1, "The argument is only for looks. It must be rarg1");
 
   if (UseHeavyMonitors) {
-    call_VM_leaf(CAST_FROM_FN_PTR(address, InterpreterRuntime::monitorexit), lock_reg);
+    if (UseWispMonitor) {
+      call_VM(noreg, CAST_FROM_FN_PTR(address, InterpreterRuntime::monitorexit_wisp), lock_reg);
+    } else {
+      call_VM_leaf(CAST_FROM_FN_PTR(address, InterpreterRuntime::monitorexit), lock_reg);
+    }
   } else {
     Label done;
 
@@ -888,7 +905,11 @@ void InterpreterMacroAssembler::unlock_object(Register lock_reg)
 
     // Call the runtime routine for slow case.
     str(obj_reg, Address(lock_reg, BasicObjectLock::obj_offset_in_bytes())); // restore obj
-    call_VM_leaf(CAST_FROM_FN_PTR(address, InterpreterRuntime::monitorexit), lock_reg);
+    if (UseWispMonitor) {
+      call_VM(noreg, CAST_FROM_FN_PTR(address, InterpreterRuntime::monitorexit_wisp), lock_reg);
+    } else {
+      call_VM_leaf(CAST_FROM_FN_PTR(address, InterpreterRuntime::monitorexit), lock_reg);
+    }
 
     bind(done);
 

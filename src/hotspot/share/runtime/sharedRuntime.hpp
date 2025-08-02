@@ -276,6 +276,11 @@ class SharedRuntime: AllStatic {
   static int dtrace_method_entry(JavaThread* thread, Method* m);
   static int dtrace_method_exit(JavaThread* thread, Method* m);
 
+#ifdef ASSERT
+  // Trace wisp coroutine switch.
+  static void coroutine_switch_trace(JavaThread* thread, void* arg);
+#endif
+
   // Utility method for retrieving the Java thread id, returns 0 if the
   // thread is not a well formed Java thread.
   static jlong get_java_tid(Thread* thread);
@@ -339,7 +344,8 @@ class SharedRuntime: AllStatic {
 
   static void monitor_enter_helper(oopDesc* obj, BasicLock* lock, JavaThread* thread);
 
-  static void monitor_exit_helper(oopDesc* obj, BasicLock* lock, JavaThread* current);
+  template<typename OopRef>
+  static void monitor_exit_helper(OopRef obj, BasicLock* lock, JavaThread* current);
 
  private:
   static Handle find_callee_info(Bytecodes::Code& bc, CallInfo& callinfo, TRAPS);
@@ -491,6 +497,9 @@ class SharedRuntime: AllStatic {
   // Slow-path Locking and Unlocking
   static void complete_monitor_locking_C(oopDesc* obj, BasicLock* lock, JavaThread* current);
   static void complete_monitor_unlocking_C(oopDesc* obj, BasicLock* lock, JavaThread* current);
+  // complete_wisp_monitor_unlocking_C is for call_VM. It is not for opto.
+  static void complete_wisp_monitor_unlocking_C(JavaThread* current, oopDesc* obj, BasicLock* lock);
+  static void complete_wisp_proxy_monitor_unlocking_C(oopDesc* obj, BasicLock* lock, JavaThread* current);
 
   // Resolving of calls
   static address resolve_static_call_C     (JavaThread* current);

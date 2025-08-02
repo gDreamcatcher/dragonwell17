@@ -764,6 +764,10 @@ void SafepointSynchronize::block(JavaThread *thread) {
   guarantee(thread->safepoint_state()->get_safepoint_id() == InactiveSafepointCounter,
             "The safepoint id should be set only in block path");
 
+  if (EnableCoroutine) {
+    Coroutine::after_safepoint(thread);
+  }
+
   // cross_modify_fence is done by SafepointMechanism::process_if_requested
   // which is the only caller here.
 }
@@ -965,6 +969,13 @@ void ThreadSafepointState::handle_polling_page_exception() {
     // Process pending operation
     SafepointMechanism::process_if_requested_with_exit_check(self, true /* check asyncs */);
 
+    if (EnableCoroutine) {
+      Coroutine::after_safepoint(thread());
+    }
+    // pay attention: since the call to Coroutine::after_safepoint(thread());
+    // might trigger the GC, any oop value used before this call must be
+    // preserved over GCs(e.g via Handle).
+
     // restore oop result, if any
     if (return_oop) {
       caller_fr.set_saved_oop_result(&map, return_value());
@@ -986,6 +997,13 @@ void ThreadSafepointState::handle_polling_page_exception() {
     // is ok though). Sure is a lot of bother for a deprecated feature...
     SafepointMechanism::process_if_requested_with_exit_check(self, false /* check asyncs */);
     set_at_poll_safepoint(false);
+
+    if (EnableCoroutine) {
+      // we should move this logic forward, to make sure
+      // the sanity check of pending/pending async ex
+      // check is effective for this java call.
+      Coroutine::after_safepoint(thread());
+    }
 
     // If we have a pending async exception deoptimize the frame
     // as otherwise we may never deliver it.

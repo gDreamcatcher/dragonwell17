@@ -142,7 +142,7 @@ inline JavaThreadState JavaThread::thread_state() const    {
 }
 
 inline void JavaThread::set_thread_state(JavaThreadState s) {
-  assert(current_or_null() == NULL || current_or_null() == this,
+  assert(UseWispMonitor || current_or_null() == NULL || current_or_null() == this,
          "state change should only be called by the current thread");
 #if defined(PPC64) || defined (AARCH64) || defined(RISCV64)
   // Use membars when accessing volatile _thread_state. See
@@ -206,7 +206,6 @@ inline void JavaThread::set_terminated(TerminatedTypes t) {
 inline void JavaThread::set_class_to_be_initialized(InstanceKlass* k) {
   assert((k == NULL && _class_to_be_initialized != NULL) ||
          (k != NULL && _class_to_be_initialized == NULL), "incorrect usage");
-  assert(this == Thread::current(), "Only the current thread can set this field");
   _class_to_be_initialized = k;
 }
 

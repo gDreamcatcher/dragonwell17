@@ -94,6 +94,11 @@ class InterpreterRuntime: AllStatic {
   static void    throw_pending_exception(JavaThread* current);
 
   static void resolve_from_cache(JavaThread* current, Bytecodes::Code bytecode);
+
+#ifdef ASSERT
+  static void print_site(JavaThread* current, void* arg0, void* arg1);
+#endif
+
  private:
   // Statics & fields
   static void resolve_get_put(JavaThread* current, Bytecodes::Code bytecode);
@@ -107,6 +112,7 @@ class InterpreterRuntime: AllStatic {
   // Synchronization
   static void    monitorenter(JavaThread* current, BasicObjectLock* elem);
   static void    monitorexit (BasicObjectLock* elem);
+  static void    monitorexit_wisp(JavaThread* current, BasicObjectLock* elem);
 
   static void    throw_illegal_monitor_state_exception(JavaThread* current);
   static void    new_illegal_monitor_state_exception(JavaThread* current);

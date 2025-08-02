@@ -1451,9 +1451,8 @@ const intx ObjectAlignmentInBytes = 8;
   product(intx, SpecTrapLimitExtraEntries,  3, EXPERIMENTAL,                \
           "Extra method data trap entries for speculation")                 \
                                                                             \
-  develop(intx, InlineFrequencyRatio,    20,                                \
+  product(double, InlineFrequencyRatio, 0.25, DIAGNOSTIC,                   \
           "Ratio of call site execution to caller method invocation")       \
-          range(0, max_jint)                                                \
                                                                             \
   product_pd(intx, InlineFrequencyCount, DIAGNOSTIC,                        \
           "Count of call site execution necessary to trigger frequent "     \
@@ -2110,6 +2109,30 @@ const intx ObjectAlignmentInBytes = 8;
           "more eagerly at the cost of higher overhead. A value of 0 "      \
           "(default) disables native heap trimming.")                       \
           range(0, UINT_MAX)                                                \
+                                                                            \
+  /* Wisp2 */                                                               \
+  product(bool, EnableCoroutine, false, EXPERIMENTAL,                       \
+          "Enable coroutine support")                                       \
+                                                                            \
+  product(uintx, DefaultCoroutineStackSize, 128*K,                          \
+          "Default size of stack that is associated with new coroutine")    \
+                                                                            \
+  product(bool, UseWispMonitor, false, EXPERIMENTAL,                        \
+          "yields to next coroutine when ObjectMonitor is contended")       \
+                                                                            \
+  product(bool, UseWisp2, false, EXPERIMENTAL,                              \
+          "Enable Wisp2")                                                   \
+                                                                            \
+  product(bool, Wisp2ThreadStop, false, EXPERIMENTAL,                       \
+          "ThreadDeath cannot be catched")                                  \
+                                                                            \
+  product(bool, PrintThreadCoroutineInfo, false, MANAGEABLE,                \
+          "print the park/unpark information for thread coroutine")         \
+                                                                            \
+  product(bool, VerboseWisp, false, DIAGNOSTIC,                             \
+          "Print verbose Wisp information")                                 \
+                                                                            \
+
 
 // end of RUNTIME_FLAGS
 

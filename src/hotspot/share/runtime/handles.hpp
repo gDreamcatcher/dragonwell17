@@ -154,6 +154,8 @@ DEF_HANDLE(typeArray        , is_typeArray_noinline        )
     ~name##Handle ();                            \
     void remove();                               \
                                                  \
+    Thread *& thread_ref() { return _thread; }   \
+                                                 \
     /* Operators for ease of use */              \
     type*        operator () () const            { return obj(); } \
     type*        operator -> () const            { return non_null_obj(); } \
@@ -184,6 +186,13 @@ class HandleArea: public Arena {
  public:
   // Constructor
   HandleArea(HandleArea* prev) : Arena(mtThread, Chunk::tiny_size) {
+    debug_only(_handle_mark_nesting    = 0);
+    debug_only(_no_handle_mark_nesting = 0);
+    _prev = prev;
+  }
+  // Only coroutine uses this constructor
+  HandleArea(HandleArea* prev, size_t init_size) : Arena(mtThread, init_size) {
+    assert(EnableCoroutine, "EnableCoroutine is off");
     debug_only(_handle_mark_nesting    = 0);
     debug_only(_no_handle_mark_nesting = 0);
     _prev = prev;
@@ -258,6 +267,7 @@ class HandleMark {
   void chop_later_chunks();
  public:
   HandleMark(Thread* thread)                      { initialize(thread); }
+  HandleMark(Thread* thread, HandleArea* area, HandleMark* last_handle_mark);
   ~HandleMark();
 
   // Functions used by HandleMarkCleaner
@@ -270,6 +280,9 @@ class HandleMark {
   void* operator new [](size_t size) throw();
   void operator delete(void* p);
   void operator delete[](void* p);
+
+  // only for wisp
+  void change_thread_for_wisp(Thread *thread);
 };
 
 //------------------------------------------------------------------------------------------------------------------------
@@ -314,6 +327,9 @@ class HandleMarkCleaner: public StackObj {
  public:
   inline HandleMarkCleaner(Thread* thread);
   inline ~HandleMarkCleaner();
+  Thread *& thread_ref() {
+    return _thread;
+  }
 };
 
 #endif // SHARE_RUNTIME_HANDLES_HPP

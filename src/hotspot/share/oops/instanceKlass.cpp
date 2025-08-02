@@ -77,6 +77,7 @@
 #include "runtime/atomic.hpp"
 #include "runtime/biasedLocking.hpp"
 #include "runtime/fieldDescriptor.inline.hpp"
+#include "runtime/coroutine.hpp"
 #include "runtime/handles.inline.hpp"
 #include "runtime/javaCalls.hpp"
 #include "runtime/mutexLocker.hpp"
@@ -857,6 +858,10 @@ bool InstanceKlass::link_class_impl(TRAPS) {
   // Timing
   // timer handles recursion
   JavaThread* jt = THREAD;
+  JavaThread* current = jt;
+  if (UseWispMonitor) {
+    current = WispThread::current(current);
+  }
 
   // link super class before linking this class
   Klass* super_klass = super();
@@ -895,8 +900,8 @@ bool InstanceKlass::link_class_impl(TRAPS) {
   PerfClassTraceTime vmtimer(ClassLoader::perf_class_link_time(),
                              ClassLoader::perf_class_link_selftime(),
                              ClassLoader::perf_classes_linked(),
-                             jt->get_thread_stat()->perf_recursion_counts_addr(),
-                             jt->get_thread_stat()->perf_timers_addr(),
+                             current->get_thread_stat()->perf_recursion_counts_addr(),
+                             current->get_thread_stat()->perf_timers_addr(),
                              PerfClassTraceTime::CLASS_LINK);
 
   // verification & rewriting
@@ -1086,6 +1091,10 @@ void InstanceKlass::initialize_impl(TRAPS) {
   bool wait = false;
 
   JavaThread* jt = THREAD;
+  JavaThread* current = jt;
+  if (UseWispMonitor) {
+    current = WispThread::current(current);
+  }
 
   // refer to the JVM book page 47 for description of steps
   // Step 1
@@ -1097,15 +1106,18 @@ void InstanceKlass::initialize_impl(TRAPS) {
     // If we were to use wait() instead of waitInterruptibly() then
     // we might end up throwing IE from link/symbol resolution sites
     // that aren't expected to throw.  This would wreak havoc.  See 6320309.
-    while (is_being_initialized() && !is_reentrant_initialization(jt)) {
+    while (is_being_initialized() && !is_reentrant_initialization(current)) {
       wait = true;
-      jt->set_class_to_be_initialized(this);
+      assert(current == Thread::current() ||
+             current == WispThread::current(Thread::current()),
+             "Only the current thread can set this field");
+      current->set_class_to_be_initialized(this);
       ol.wait_uninterruptibly(jt);
-      jt->set_class_to_be_initialized(NULL);
+      current->set_class_to_be_initialized(NULL);
     }
 
     // Step 3
-    if (is_being_initialized() && is_reentrant_initialization(jt)) {
+    if (is_being_initialized() && is_reentrant_initialization(current)) {
       DTRACE_CLASSINIT_PROBE_WAIT(recursive, -1, wait);
       return;
     }
@@ -1179,8 +1191,8 @@ void InstanceKlass::initialize_impl(TRAPS) {
       PerfClassTraceTime timer(ClassLoader::perf_class_init_time(),
                                ClassLoader::perf_class_init_selftime(),
                                ClassLoader::perf_classes_inited(),
-                               jt->get_thread_stat()->perf_recursion_counts_addr(),
-                               jt->get_thread_stat()->perf_timers_addr(),
+                               current->get_thread_stat()->perf_recursion_counts_addr(),
+                               current->get_thread_stat()->perf_timers_addr(),
                                PerfClassTraceTime::CLASS_CLINIT);
       call_class_initializer(THREAD);
     } else {
@@ -1521,6 +1533,7 @@ void InstanceKlass::call_class_initializer(TRAPS) {
     ls.print_cr("%s (" INTPTR_FORMAT ")", h_method() == NULL ? "(no method)" : "", p2i(this));
   }
   if (h_method() != NULL) {
+    WispClinitCounterMark wcm(THREAD);
     JavaCallArguments args; // No arguments
     JavaValue result(T_VOID);
     JavaCalls::call(&result, h_method, &args, CHECK); // Static call (no args)
@@ -4217,6 +4230,23 @@ unsigned char * InstanceKlass::get_cached_class_file_bytes() {
   return VM_RedefineClasses::get_cached_class_file_bytes(_cached_class_file);
 }
 #endif
+
+bool InstanceKlass::is_reentrant_initialization(Thread *thread)  {
+  if (UseWispMonitor) {
+    assert(thread != NULL, "sanity check");
+    thread = WispThread::current(thread);
+  }
+  return thread == _init_thread;
+}
+
+void InstanceKlass::set_init_thread(Thread *thread)  {
+  if (UseWispMonitor && thread != NULL) {
+    assert(thread->is_Java_thread(), "sanity check");
+    assert(((JavaThread*) thread)->current_coroutine() != NULL, "sanity check");
+    thread = WispThread::current(thread);
+  }
+  _init_thread = thread;
+}
 
 bool InstanceKlass::is_shareable() const {
 #if INCLUDE_CDS

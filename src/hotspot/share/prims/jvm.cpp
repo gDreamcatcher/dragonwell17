@@ -69,6 +69,7 @@
 #include "prims/stackwalk.hpp"
 #include "runtime/arguments.hpp"
 #include "runtime/atomic.hpp"
+#include "runtime/globals.hpp"
 #include "runtime/globals_extension.hpp"
 #include "runtime/handles.inline.hpp"
 #include "runtime/init.hpp"
@@ -605,6 +606,12 @@ JVM_END
 JVM_ENTRY(void, JVM_MonitorWait(JNIEnv* env, jobject handle, jlong ms))
   Handle obj(THREAD, JNIHandles::resolve_non_null(handle));
   JavaThreadInObjectWaitState jtiows(thread, ms != 0);
+
+  WispPostStealHandleUpdateMark w(thread, (Thread *&)THREAD, env, __tiv, __hm, &jtiows);
+
+  // Coroutine work steal support
+  EnableStealMark p(THREAD);
+
   if (JvmtiExport::should_post_monitor_wait()) {
     JvmtiExport::post_monitor_wait(thread, obj(), ms);
 
@@ -845,12 +852,16 @@ static jclass jvm_define_class_common(const char *name,
   if (source == NULL)  source = "__JVM_DefineClass__";
 
   JavaThread* jt = THREAD;
+  JavaThread* current = jt;
+  if (UseWispMonitor) {
+    current = WispThread::current(current);
+  }
 
   PerfClassTraceTime vmtimer(ClassLoader::perf_define_appclass_time(),
                              ClassLoader::perf_define_appclass_selftime(),
                              ClassLoader::perf_define_appclasses(),
-                             jt->get_thread_stat()->perf_recursion_counts_addr(),
-                             jt->get_thread_stat()->perf_timers_addr(),
+                             current->get_thread_stat()->perf_recursion_counts_addr(),
+                             current->get_thread_stat()->perf_timers_addr(),
                              PerfClassTraceTime::DEFINE_CLASS);
 
   if (UsePerfData) {
@@ -2842,6 +2853,7 @@ static void thread_entry(JavaThread* thread, TRAPS) {
   HandleMark hm(THREAD);
   Handle obj(THREAD, thread->threadObj());
   JavaValue result(T_VOID);
+
   JavaCalls::call_virtual(&result,
                           obj,
                           vmClasses::Thread_klass(),
@@ -2975,6 +2987,10 @@ JVM_ENTRY(void, JVM_StopThread(JNIEnv* env, jobject jthread, jobject throwable))
   }
 JVM_END
 
+JVM_ENTRY(jboolean, JVM_IsThreadAlive(JNIEnv* env, jobject jthread))
+  oop thread_oop = JNIHandles::resolve_non_null(jthread);
+  return java_lang_Thread::is_alive(thread_oop);
+JVM_END
 
 JVM_ENTRY(void, JVM_SuspendThread(JNIEnv* env, jobject jthread))
   ThreadsListHandle tlh(thread);
@@ -3088,6 +3104,38 @@ JVM_ENTRY(void, JVM_Interrupt(JNIEnv* env, jobject jthread))
   }
 JVM_END
 
+JVM_ENTRY(jboolean, JVM_IsInSameNative(JNIEnv* env, jobject jthread))
+  assert(EnableCoroutine, "coroutine not enabled");
+  oop java_thread = JNIHandles::resolve_non_null(jthread);
+  MutexLocker ml(thread->threadObj() == java_thread ? NULL : Threads_lock);
+  // We need to re-resolve the java_thread, since a GC might have happened during the
+  // acquire of the lock
+  JavaThread* thr = java_lang_Thread::thread(JNIHandles::resolve_non_null(jthread));
+  // the thread is in native status and the native call counter isn't changed during two calls
+  // then return true
+  if (thr != NULL && thr->thread_state() == _thread_in_native) {
+    Coroutine* coro = thr->coroutine_list();
+    assert(coro != NULL, "coroutine list");
+    if (coro->last_native_call_counter() == coro->native_call_counter()) {
+      return JNI_TRUE;
+    } else {
+      coro->set_last_native_call_counter(coro->native_call_counter());
+    }
+  }
+  return JNI_FALSE;
+JVM_END
+
+JVM_ENTRY(jboolean, JVM_CheckAndClearNativeInterruptForWisp(JNIEnv* env, jobject task, jobject jthread))
+  // here, maybe the thread is in `Thread.start()`, the eetop is not settled, so we should also block the
+  // condition with `th` is null.
+  assert(EnableCoroutine, "Coroutine is disabled");
+  JavaThread *th = java_lang_Thread::thread(JNIHandles::resolve_non_null(jthread));
+  if (th != NULL) {
+    return (jboolean)(th->clear_interrupt_for_wisp());
+  } else {
+    return (jboolean)false;
+  }
+JVM_END
 
 // Return true iff the current thread has locked the object passed in
 
@@ -3477,6 +3525,9 @@ jclass find_class_from_class_loader(JNIEnv* env, Symbol* name, jboolean init,
 // Method ///////////////////////////////////////////////////////////////////////////////////////////
 
 JVM_ENTRY(jobject, JVM_InvokeMethod(JNIEnv *env, jobject method, jobject obj, jobjectArray args0))
+  // Coroutine work steal support
+  WispPostStealHandleUpdateMark w(thread, (Thread *&)THREAD, env, __tiv, __hm);
+
   Handle method_handle;
   if (thread->stack_overflow_state()->stack_available((address) &method_handle) >= JVMInvokeMethodSlack) {
     method_handle = Handle(THREAD, JNIHandles::resolve(method));
@@ -3501,6 +3552,9 @@ JVM_END
 
 
 JVM_ENTRY(jobject, JVM_NewInstanceFromConstructor(JNIEnv *env, jobject c, jobjectArray args0))
+  // Coroutine work steal support
+  WispPostStealHandleUpdateMark w(thread, (Thread *&)THREAD, env, __tiv, __hm);
+
   oop constructor_mirror = JNIHandles::resolve(c);
   objArrayHandle args(THREAD, objArrayOop(JNIHandles::resolve(args0)));
   oop result = Reflection::invoke_constructor(constructor_mirror, args, CHECK_NULL);
@@ -3816,6 +3870,48 @@ JVM_ENTRY(jobjectArray, JVM_GetEnclosingMethodInfo(JNIEnv *env, jclass ofClass))
   }
   return (jobjectArray) JNIHandles::make_local(THREAD, dest());
 }
+JVM_END
+
+JVM_ENTRY(void, JVM_SetWispTask(JNIEnv* env, jclass klass, jlong coroutinePtr, jint task_id, jobject task, jobject engine))
+  assert(EnableCoroutine, "Coroutine is disabled");
+  Coroutine* coro = (Coroutine*)coroutinePtr;
+  coro->set_wisp_task_id(task_id);
+  coro->set_wisp_engine(JNIHandles::resolve_non_null(engine));
+  coro->set_wisp_task(JNIHandles::resolve_non_null(task));
+JVM_END
+
+JVM_ENTRY(void, JVM_UpdateThreadObjectForWispThread(JNIEnv* env, jclass klass, jlong coroutinePtr, jobject threadObject))
+  assert(EnableCoroutine, "Coroutine is disabled");
+  if (UseWispMonitor) {
+    Coroutine* coro = (Coroutine*)coroutinePtr;
+    WispThread* wt = coro->wisp_thread();
+    assert(wt != NULL, "Sanity check");
+    wt->set_threadObj(JNIHandles::resolve(threadObject));
+  }
+JVM_END
+
+JVM_ENTRY(jint, JVM_GetProxyUnpark(JNIEnv* env, jclass klass, jintArray res))
+  assert(EnableCoroutine, "Coroutine is disabled");
+  return WispThread::get_proxy_unpark(res);
+JVM_END
+
+JVM_ENTRY(void, JVM_MarkPreempted(JNIEnv* env, jclass klass, jobject threadObj))
+  assert(EnableCoroutine, "Coroutine is disabled");
+  JavaThread* thr = NULL;
+  {
+    //Use lock to prevent deleting thr when we do the update on it.
+    MutexLocker mu(Threads_lock);
+    thr = java_lang_Thread::thread(JNIHandles::resolve_non_null(threadObj));
+
+    if (thr == NULL || thr->is_terminated() ||
+          thr->wisp_preempted()) { // already mark preempted, do not fire safepoint again
+      return;
+    }
+    thr->set_wisp_preempted(true);
+  }
+  // fire an thread-local handshake to let the thread go check flag
+  CoroutinePreemptClosure cps;
+  Handshake::execute(&cps, thr);
 JVM_END
 
 // Returns an array of java.lang.String objects containing the input arguments to the VM.

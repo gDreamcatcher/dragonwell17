@@ -334,7 +334,8 @@ private:
                                                 Symbol* name,
                                                 ClassLoaderData* loader_data,
                                                 Handle lockObject,
-                                                bool* throw_circularity_error);
+                                                bool* throw_circularity_error,
+                                                SystemDictLocker *mu);
 
   static void define_instance_class(InstanceKlass* k, Handle class_loader, TRAPS);
   static InstanceKlass* find_or_define_helper(Symbol* class_name,

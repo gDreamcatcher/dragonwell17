@@ -218,7 +218,11 @@ void javaVFrame::print_lock_info_on(outputStream* st, int frame_count) {
     else if (thread()->osthread()->get_state() == OBJECT_WAIT) {
       // We are waiting on an Object monitor but Object.wait() isn't the
       // top-frame, so we should be waiting on a Class initialization monitor.
-      InstanceKlass* k = thread()->class_to_be_initialized();
+      JavaThread* jt = thread();
+      if (UseWispMonitor) {
+        jt = WispThread::current(jt);
+      }
+      InstanceKlass* k = jt->class_to_be_initialized();
       if (k != NULL) {
         st->print_cr("\t- waiting on the Class initialization monitor for %s", k->external_name());
       }
@@ -248,7 +252,7 @@ void javaVFrame::print_lock_info_on(outputStream* st, int frame_count) {
         // the monitor is associated with an object, i.e., it is locked
 
         const char *lock_state = "locked"; // assume we have the monitor locked
-        if (!found_first_monitor && frame_count == 0) {
+        if (!found_first_monitor && (frame_count == 0 || UseWispMonitor)) {
           // If this is the first frame and we haven't found an owned
           // monitor before, then we need to see if we have completed
           // the lock or if we are blocked trying to acquire it. Only

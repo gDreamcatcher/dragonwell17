@@ -256,7 +256,6 @@ JRT_LEAF(jfloat, SharedRuntime::frem(jfloat  x, jfloat  y))
 #endif
 JRT_END
 
-
 JRT_LEAF(jdouble, SharedRuntime::drem(jdouble x, jdouble y))
 #ifdef _WIN64
   union { jdouble d; julong l; } xbits, ybits;
@@ -539,6 +538,12 @@ address SharedRuntime::raw_exception_handler_for_return_address(JavaThread* curr
   ShouldNotReachHere();
   return NULL;
 }
+
+#ifdef ASSERT
+JRT_LEAF(void, SharedRuntime::coroutine_switch_trace(JavaThread* current, void* arg))
+  tty->print_cr("Current thread = (%p, %s), arg = %p\n", current, current->name(), arg);
+JRT_END
+#endif
 
 
 JRT_LEAF(address, SharedRuntime::exception_handler_for_return_address(JavaThread* current, address return_address))
@@ -2134,6 +2139,13 @@ void SharedRuntime::monitor_enter_helper(oopDesc* obj, BasicLock* lock, JavaThre
   if (PrintBiasedLockingStatistics) {
     Atomic::inc(BiasedLocking::slow_path_entry_count_addr());
   }
+
+  // must place it befor EnableStealMark.
+  WispPostStealHandleUpdateMark w(current, (Thread *&)THREAD, __tiv);
+
+  // Coroutine work steal support
+  EnableStealMark p(THREAD);
+
   Handle h_obj(THREAD, obj);
   ObjectSynchronizer::enter(h_obj, lock, current);
   assert(!HAS_PENDING_EXCEPTION, "Should have no exception here");
@@ -2142,27 +2154,36 @@ void SharedRuntime::monitor_enter_helper(oopDesc* obj, BasicLock* lock, JavaThre
 
 // Handles the uncommon case in locking, i.e., contention or an inflated lock.
 JRT_BLOCK_ENTRY(void, SharedRuntime::complete_monitor_locking_C(oopDesc* obj, BasicLock* lock, JavaThread* current))
+  WispPostStealHandleUpdateMark w(current, __hm);
   SharedRuntime::monitor_enter_helper(obj, lock, current);
 JRT_END
 
-void SharedRuntime::monitor_exit_helper(oopDesc* obj, BasicLock* lock, JavaThread* current) {
+template<typename OopRef>
+void SharedRuntime::monitor_exit_helper(OopRef obj, BasicLock* lock, JavaThread* current) {
   assert(JavaThread::current() == current, "invariant");
   // Exit must be non-blocking, and therefore no exceptions can be thrown.
   ExceptionMark em(current);
-  // The object could become unlocked through a JNI call, which we have no other checks for.
-  // Give a fatal message if CheckJNICalls. Otherwise we ignore it.
-  if (obj->is_unlocked()) {
-    if (CheckJNICalls) {
-      fatal("Object has been unlocked by JNI");
-    }
-    return;
-  }
   ObjectSynchronizer::exit(obj, lock, current);
 }
+template void SharedRuntime::monitor_exit_helper<oopDesc*>(oopDesc* obj, BasicLock* lock, JavaThread* current);
+template void SharedRuntime::monitor_exit_helper<Handle>(Handle obj, BasicLock* lock, JavaThread* current);
 
 // Handles the uncommon cases of monitor unlocking in compiled code
 JRT_LEAF(void, SharedRuntime::complete_monitor_unlocking_C(oopDesc* obj, BasicLock* lock, JavaThread* current))
-  SharedRuntime::monitor_exit_helper(obj, lock, current);
+  SharedRuntime::monitor_exit_helper<oopDesc*>(obj, lock, current);
+JRT_END
+
+JRT_LEAF(void, SharedRuntime::complete_wisp_proxy_monitor_unlocking_C(oopDesc* obj, BasicLock* lock, JavaThread* current))
+  WispThread* wisp_thread = WispThread::current(current);
+  wisp_thread->set_proxy_unpark_flag();
+  SharedRuntime::monitor_exit_helper<oopDesc*>(obj, lock, current);
+  wisp_thread->clear_proxy_unpark_flag();
+JRT_END
+
+JRT_ENTRY_NO_ASYNC(void, SharedRuntime::complete_wisp_monitor_unlocking_C(JavaThread* current, oopDesc* obj, BasicLock* lock))
+  assert(EnableCoroutine, "Coroutine is disabled");
+  Handle h_obj(current, obj);
+  SharedRuntime::monitor_exit_helper<Handle>(h_obj, lock, current);
 JRT_END
 
 #ifndef PRODUCT

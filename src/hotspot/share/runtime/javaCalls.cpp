@@ -39,6 +39,7 @@
 #include "prims/jniCheck.hpp"
 #include "prims/jvmtiExport.hpp"
 #include "runtime/handles.inline.hpp"
+#include "runtime/init.hpp"
 #include "runtime/interfaceSupport.inline.hpp"
 #include "runtime/javaCalls.hpp"
 #include "runtime/jniHandles.inline.hpp"
@@ -99,7 +100,7 @@ JavaCallWrapper::JavaCallWrapper(const methodHandle& callee_method, Handle recei
   _anchor.copy(_thread->frame_anchor());
   _thread->frame_anchor()->clear();
 
-  debug_only(_thread->inc_java_call_counter());
+  _thread->inc_java_call_counter();
   _thread->set_active_handles(new_handles);     // install new handle block and reset Java frame linkage
 
   assert (_thread->thread_state() != _thread_in_native, "cannot set native pc to NULL");
@@ -112,6 +113,15 @@ JavaCallWrapper::JavaCallWrapper(const methodHandle& callee_method, Handle recei
   MACOS_AARCH64_ONLY(_thread->enable_wx(WXExec));
 }
 
+void JavaCallWrapper::initialize(JavaThread* thread, JNIHandleBlock* handles, Method* callee_method, oop receiver, JavaValue* result) {
+  assert(EnableCoroutine, "EnableCoroutine is off");
+  _thread = thread;
+  _handles = handles;
+  _callee_method = callee_method;
+  _receiver = receiver;
+  _result = result;
+  _anchor.clear();
+}
 
 JavaCallWrapper::~JavaCallWrapper() {
   assert(_thread == JavaThread::current(), "must still be the same thread");
@@ -124,7 +134,7 @@ JavaCallWrapper::~JavaCallWrapper() {
 
   _thread->frame_anchor()->zap();
 
-  debug_only(_thread->dec_java_call_counter());
+  _thread->dec_java_call_counter();
 
   // Old thread-local info. has been restored. We are not back in the VM.
   ThreadStateTransition::transition_from_java(_thread, _thread_in_vm);
@@ -426,6 +436,10 @@ void JavaCalls::call_helper(JavaValue* result, const methodHandle& method, JavaC
         }
       }
 #endif
+      // thread steal support
+      methodHandle* m = const_cast<methodHandle*>(&method);
+      WispPostStealHandleUpdateMark w(thread, (Thread *&)THREAD, *m, m, link);
+
       StubRoutines::call_stub()(
         (address)&link,
         // (intptr_t*)&(result->_value), // see NOTE above (compiler problem)

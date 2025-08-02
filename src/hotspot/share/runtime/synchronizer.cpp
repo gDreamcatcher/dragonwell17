@@ -28,13 +28,16 @@
 #include "logging/log.hpp"
 #include "logging/logStream.hpp"
 #include "memory/allocation.inline.hpp"
+#include "memory/oopFactory.hpp"
 #include "memory/padded.hpp"
 #include "memory/resourceArea.hpp"
 #include "memory/universe.hpp"
 #include "oops/markWord.hpp"
 #include "oops/oop.inline.hpp"
+#include "oops/oopHandle.inline.hpp"
 #include "runtime/atomic.hpp"
 #include "runtime/biasedLocking.hpp"
+#include "runtime/coroutine.hpp"
 #include "runtime/handles.inline.hpp"
 #include "runtime/handshake.hpp"
 #include "runtime/interfaceSupport.inline.hpp"
@@ -309,6 +312,9 @@ static bool _no_progress_skip_increment = false;
 
 bool ObjectSynchronizer::quick_notify(oopDesc* obj, JavaThread* current, bool all) {
   assert(current->thread_state() == _thread_in_Java, "invariant");
+  if (UseWispMonitor) {
+    current = WispThread::current(current);
+  }
   NoSafepointVerifier nsv;
   if (obj == NULL) return false;  // slow-path for invalid obj
   const markWord mark = obj->mark();
@@ -356,7 +362,10 @@ bool ObjectSynchronizer::quick_notify(oopDesc* obj, JavaThread* current, bool al
 
 bool ObjectSynchronizer::quick_enter(oop obj, JavaThread* current,
                                      BasicLock * lock) {
-  assert(current->thread_state() == _thread_in_Java, "invariant");
+  assert(UseWispMonitor || current->thread_state() == _thread_in_Java, "invariant");
+  if (UseWispMonitor) {
+    current = WispThread::current(current);
+  }
   NoSafepointVerifier nsv;
   if (obj == NULL) return false;       // Need to throw NPE
 
@@ -463,6 +472,57 @@ void ObjectSynchronizer::handle_sync_on_value_based_class(Handle obj, JavaThread
   }
 }
 
+void ObjectSynchronizer::exit(Handle object, BasicLock* lock, TRAPS) {
+  assert(EnableCoroutine, "Coroutine is disabled");
+  markWord mark = object->mark();
+  // We cannot check for Biased Locking if we are racing an inflation.
+  assert(mark == markWord::INFLATING() ||
+         !mark.has_bias_pattern(), "should not see bias pattern here");
+
+  markWord dhw = lock->displaced_header();
+  if (dhw.value() == 0) {
+    // If the displaced header is NULL, then this exit matches up with
+    // a recursive enter. No real work to do here except for diagnostics.
+#ifndef PRODUCT
+    if (mark != markWord::INFLATING()) {
+      // Only do diagnostics if we are not racing an inflation. Simply
+      // exiting a recursive enter of a Java Monitor that is being
+      // inflated is safe; see the has_monitor() comment below.
+      assert(!mark.is_neutral(), "invariant");
+      assert(!mark.has_locker() ||
+             THREAD->is_lock_owned((address)mark.locker()), "invariant");
+      if (mark.has_monitor()) {
+        // The BasicLock's displaced_header is marked as a recursive
+        // enter and we have an inflated Java Monitor (ObjectMonitor).
+        // This is a special case where the Java Monitor was inflated
+        // after this thread entered the stack-lock recursively. When a
+        // Java Monitor is inflated, we cannot safely walk the Java
+        // Monitor owner's stack and update the BasicLocks because a
+        // Java Monitor can be asynchronously inflated by a thread that
+        // does not own the Java Monitor.
+        ObjectMonitor * m = mark.monitor();
+        assert(((oop)(m->object()))->mark() == mark, "invariant");
+        assert(m->is_entered(THREAD), "invariant");
+      }
+    }
+#endif
+    return;
+  }
+
+  if (mark == markWord::from_pointer(lock)) {
+    // If the object is stack-locked by the current thread, try to
+    // swing the displaced header from the BasicLock back to the mark.
+    assert(dhw.is_neutral(), "invariant");
+    if (object->cas_set_mark(dhw, mark) == mark) {
+      return;
+    }
+  }
+
+  // We have to take the slow-path of possible inflation and then exit.
+  ObjectSynchronizer::inflate(THREAD,
+                              object(),
+                              inflate_cause_vm_internal)->exit(THREAD, true);
+}
 // -----------------------------------------------------------------------------
 // Monitor Enter/Exit
 // The interpreter and compiler assembly code tries to lock using the fast path
@@ -651,7 +711,7 @@ void ObjectSynchronizer::jni_exit(oop obj, TRAPS) {
   // If this thread has locked the object, exit the monitor. We
   // intentionally do not use CHECK on check_owner because we must exit the
   // monitor even if an exception was already pending.
-  if (monitor->check_owner(THREAD)) {
+  if (monitor->check_owner(current)) {
     monitor->exit(current);
   }
 }
@@ -666,6 +726,7 @@ ObjectLocker::ObjectLocker(Handle obj, JavaThread* thread) {
 
   if (_obj() != NULL) {
     ObjectSynchronizer::enter(_obj, &_lock, _thread);
+    assert(!EnableCoroutine || thread == Thread::current(), "must not be stealed");
   }
 }
 
@@ -1034,7 +1095,9 @@ bool ObjectSynchronizer::current_thread_holds_lock(JavaThread* current,
     assert(!h_obj->mark().has_bias_pattern(), "biases should be revoked by now");
   }
 
-  assert(current == JavaThread::current(), "Can only be called on current thread");
+  assert(current == JavaThread::current() ||
+      UseWispMonitor && current == WispThread::current(JavaThread::current()), 
+      "Can only be called on current thread");
   oop obj = h_obj();
 
   markWord mark = read_stable_mark(obj);
@@ -1659,8 +1722,14 @@ class ReleaseJavaMonitorsClosure: public MonitorClosure {
 void ObjectSynchronizer::release_monitors_owned_by_thread(JavaThread* current) {
   assert(current == JavaThread::current(), "must be current Java thread");
   NoSafepointVerifier nsv;
-  ReleaseJavaMonitorsClosure rjmc(current);
-  ObjectSynchronizer::monitors_iterate(&rjmc, current);
+  JavaThread* jt = UseWispMonitor ? WispThread::current(current) : current;
+  ReleaseJavaMonitorsClosure rjmc(jt);
+  if (UseWispMonitor) {
+    PauseNoSafepointVerifier pnsv(&nsv);
+    ObjectSynchronizer::monitors_iterate(&rjmc, jt);
+  } else {
+    ObjectSynchronizer::monitors_iterate(&rjmc, jt);
+  }
   assert(!current->has_pending_exception(), "Should not be possible");
   current->clear_pending_exception();
 }
@@ -1871,4 +1940,89 @@ void ObjectSynchronizer::log_in_use_monitor_details(outputStream* out) {
   }
 
   out->flush();
+}
+
+void SystemDictObjMonitor::lock(BasicLock* lock, Thread* current) {
+  assert(UseWispMonitor, "SystemDictObjMonitor is only for UseWispMonitor");
+  if (!current->is_Java_thread()) {
+    _monitor->lock();
+    return;
+  }
+
+  JavaThread* jt = current->as_Java_thread();
+  if (!is_obj_lock()) {
+    _monitor->lock();
+    if (is_obj_lock()) {
+      // set_obj_lock has been called before we fetch the lock.
+      // now _monitor is Pointless. re-fetch the objectMonitor to
+      // satisfy the critical section semantics.
+      _monitor->unlock();
+      ObjectSynchronizer::enter(Handle(jt, _obj.resolve()), lock, jt);
+    }
+  } else {
+    ObjectSynchronizer::enter(Handle(jt, _obj.resolve()), lock, jt);
+  }
+}
+
+void SystemDictObjMonitor::unlock(BasicLock* lock, Thread* current) {
+  assert(UseWispMonitor, "SystemDictObjMonitor is only for UseWispMonitor");
+  if (!current->is_Java_thread()) {
+    _monitor->unlock();
+    return;
+  }
+
+  JavaThread* jt = current->as_Java_thread();
+  if (!is_obj_lock()) {
+    _monitor->unlock();
+  } else {
+    ObjectSynchronizer::exit(_obj.resolve(), lock, jt);
+  }
+}
+
+void SystemDictObjMonitor::wait(BasicLock* lock, Thread* current) {
+  assert(UseWispMonitor, "SystemDictObjMonitor is only for UseWispMonitor");
+  assert(current->is_Java_thread(), "SystemDictObjMonitor::wait is only for JavaThread");
+
+  JavaThread* jt = current->as_Java_thread();
+  if (!is_obj_lock()) {
+    _monitor->wait();
+    if (is_obj_lock()) {
+      _monitor->unlock();
+      ObjectSynchronizer::enter(Handle(jt, _obj.resolve()), lock, jt);
+    }
+  } else {
+    // The purpose of using wait_uninterruptibly is to keep
+    // the behavior consistent with Monitor::wait
+    ObjectSynchronizer::wait_uninterruptibly(Handle(jt, _obj.resolve()), jt);
+  }
+}
+
+void SystemDictObjMonitor::notify_all(Thread* current) {
+  assert(UseWispMonitor, "SystemDictObjMonitor is only for UseWispMonitor");
+  assert(current->is_Java_thread(), "SystemDictObjMonitor::notify_all is only for JavaThread");
+
+  JavaThread* jt = current->as_Java_thread();
+  if (!is_obj_lock()) {
+    _monitor->notify_all();
+  } else {
+    ObjectSynchronizer::notifyall(Handle(jt, _obj.resolve()), jt);
+  }
+}
+
+void SystemDictObjMonitor::create_obj_lock(Thread* current) {
+  guarantee(current->is_Java_thread(), "sanity check");
+  assert(UseWispMonitor, "UseWispMonitor if off");
+
+  oop obj = oopFactory::new_intArray(0, current->as_Java_thread());
+  MutexLocker mu(current, _monitor);
+  _obj = OopHandle(Universe::vm_global(), obj);
+  _monitor->notify_all();
+}
+
+oop SystemDictObjMonitor::obj() const {
+  return _obj.resolve();
+}
+
+bool SystemDictObjMonitor::is_obj_lock() const {
+  return _obj.peek() != NULL;
 }

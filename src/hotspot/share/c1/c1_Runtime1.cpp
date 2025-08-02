@@ -213,7 +213,6 @@ CodeBlob* Runtime1::generate_blob(BufferBlob* buffer_blob, int stub_id, const ch
   assert(oop_maps == NULL || sasm->frame_size() != no_frame_size,
          "if stub has an oop map it must have a valid frame size");
   assert(!expect_oop_map || oop_maps != NULL, "must have an oopmap");
-
   // align so printing shows nop's instead of random code at the end (SimpleStubs are aligned)
   sasm->align(BytesPerWord);
   // make sure all code is in code buffer
@@ -499,7 +498,8 @@ JRT_ENTRY_NO_ASYNC(static address, exception_handler_for_pc_helper(JavaThread* c
   // Reset method handle flag.
   current->set_is_method_handle_return(false);
 
-  Handle exception(current, ex);
+  Handle exception(current, WispThread::is_current_death_pending(current) ?
+                      (oopDesc*)Universe::wisp_thread_death_exception() : ex);
 
   // This function is called when we are about to throw an exception. Therefore,
   // we have to poll the stack watermark barrier to make sure that not yet safe
@@ -697,13 +697,57 @@ JRT_ENTRY(void, Runtime1::throw_incompatible_class_change_error(JavaThread* curr
 JRT_END
 
 
+// funtions in `Runtime1` are all private, so add a function pointer to get its address
+void (*Runtime1::monitorenter_address_C1)(JavaThread *, oopDesc* obj, BasicObjectLock *) = Runtime1::monitorenter;
+address monitorenter_address_C1 = (address)Runtime1::monitorenter_address_C1;
+
+
 JRT_BLOCK_ENTRY(void, Runtime1::monitorenter(JavaThread* current, oopDesc* obj, BasicObjectLock* lock))
   NOT_PRODUCT(_monitorenter_slowcase_cnt++;)
   if (!UseFastLocking) {
     lock->set_obj(obj);
   }
   assert(obj == lock->obj(), "must match");
+  WispPostStealHandleUpdateMark w(current, __hm);
   SharedRuntime::monitor_enter_helper(obj, lock->lock(), current);
+JRT_END
+
+
+JRT_ENTRY_NO_ASYNC(void, Runtime1::monitorexit_wisp(JavaThread* current, BasicObjectLock* lock))
+  NOT_PRODUCT(_monitorexit_slowcase_cnt++;)
+  assert(UseWispMonitor, "UseWispMonitor is off");
+  assert(current == Thread::current(), "sanity check");
+  ExceptionMark em(current);
+  oop obj = lock->obj();
+  // Almost a copy from Runtime1::monitorexit,
+  // excpet that handles are used to access objects.
+  Handle h_obj(current, obj);
+  ObjectSynchronizer::exit(h_obj, lock->lock(), THREAD);
+JRT_END
+
+
+// Handle spcecial case for wisp unpark.
+// This function is executed only when the following four conditions are all satisfied
+// 1. A synchronized method is compiled by C1
+// 2. An exception happened in this method
+// 3. There is no exception handler in this method, So it needs to unwind to its caller
+// 4. GC happened during unpark
+// This path will not call Java, so JRT_LEAF is used.
+JRT_LEAF(void, Runtime1::monitorexit_wisp_proxy(JavaThread* current, BasicObjectLock* lock))
+  NOT_PRODUCT(_monitorexit_slowcase_cnt++;)
+  assert(UseWispMonitor, "UseWispMonitor is off");
+  EXCEPTION_MARK;
+  oop obj = lock->obj();
+  assert(oopDesc::is_oop(obj), "must be NULL or an object");
+  // Setting _is_proxy_unpark of current wisp thread to true.
+  // Proxy unpark will be used when this flag is true.
+  WispThread* wisp_thread = WispThread::current(current);
+  wisp_thread->set_proxy_unpark_flag();
+  // When using fast locking, the compiled code has already tried the fast case
+  ObjectSynchronizer::exit(obj, lock->lock(), THREAD);
+  // proxy_unpark flag may get uncleared here. we need to force clear it
+  // to prevent disturbances from the monitorenter next time.
+  wisp_thread->clear_proxy_unpark_flag();
 JRT_END
 
 
@@ -712,7 +756,7 @@ JRT_LEAF(void, Runtime1::monitorexit(JavaThread* current, BasicObjectLock* lock)
   assert(current->last_Java_sp(), "last_Java_sp must be set");
   oop obj = lock->obj();
   assert(oopDesc::is_oop(obj), "must be NULL or an object");
-  SharedRuntime::monitor_exit_helper(obj, lock->lock(), current);
+  SharedRuntime::monitor_exit_helper<oopDesc*>(obj, lock->lock(), current);
 JRT_END
 
 // Cf. OptoRuntime::deoptimize_caller_frame

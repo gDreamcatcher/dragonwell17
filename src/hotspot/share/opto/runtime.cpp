@@ -102,6 +102,7 @@ address OptoRuntime::_multianewarray5_Java                        = nullptr;
 address OptoRuntime::_multianewarrayN_Java                        = nullptr;
 address OptoRuntime::_vtable_must_compile_Java                    = nullptr;
 address OptoRuntime::_complete_monitor_locking_Java               = nullptr;
+address OptoRuntime::_complete_wisp_monitor_unlocking_Java        = nullptr;
 address OptoRuntime::_monitor_notify_Java                         = nullptr;
 address OptoRuntime::_monitor_notifyAll_Java                      = nullptr;
 address OptoRuntime::_rethrow_Java                                = nullptr;
@@ -145,6 +146,7 @@ bool OptoRuntime::generate(ciEnv* env) {
   gen(env, _multianewarray5_Java           , multianewarray5_Type         , multianewarray5_C               ,    0 , true, false);
   gen(env, _multianewarrayN_Java           , multianewarrayN_Type         , multianewarrayN_C               ,    0 , true, false);
   gen(env, _complete_monitor_locking_Java  , complete_monitor_enter_Type  , SharedRuntime::complete_monitor_locking_C, 0, false, false);
+  gen(env, _complete_wisp_monitor_unlocking_Java  , complete_wisp_monitor_exit_Type  , OptoRuntime::complete_wisp_monitor_unlocking_C, 0, false, false);
   gen(env, _monitor_notify_Java            , monitor_notify_Type          , monitor_notify_C                ,    0 , false, false);
   gen(env, _monitor_notifyAll_Java         , monitor_notify_Type          , monitor_notifyAll_C             ,    0 , false, false);
   gen(env, _rethrow_Java                   , rethrow_Type                 , rethrow_C                       ,    2 , true , true );
@@ -407,6 +409,12 @@ JRT_ENTRY(void, OptoRuntime::multianewarrayN_C(Klass* elem_type, arrayOopDesc* d
   current->set_vm_result(obj);
 JRT_END
 
+JRT_ENTRY_NO_ASYNC(void, OptoRuntime::complete_wisp_monitor_unlocking_C(oopDesc* obj, BasicLock* lock, JavaThread* current))
+  assert(EnableCoroutine, "Coroutine is disabled");
+  Handle h_obj(current, obj);
+  SharedRuntime::monitor_exit_helper<Handle>(h_obj, lock, current);
+JRT_END
+
 JRT_BLOCK_ENTRY(void, OptoRuntime::monitor_notify_C(oopDesc* obj, JavaThread* current))
 
   // Very few notify/notifyAll operations find any threads on the waitset, so
@@ -588,6 +596,21 @@ const TypeFunc *OptoRuntime::complete_monitor_exit_Type() {
   const TypeTuple *range = TypeTuple::make(TypeFunc::Parms+0, fields);
 
   return TypeFunc::make(domain, range);
+}
+
+const TypeFunc *OptoRuntime::complete_wisp_monitor_exit_Type() {
+  // create input type (domain)
+  const Type **fields = TypeTuple::fields(2);
+  fields[TypeFunc::Parms+0] = TypeInstPtr::NOTNULL;  // Object to be Locked
+  fields[TypeFunc::Parms+1] = TypeRawPtr::BOTTOM;   // Address of stack location for lock
+  const TypeTuple *domain = TypeTuple::make(TypeFunc::Parms+2,fields);
+
+  // create result type (range)
+  fields = TypeTuple::fields(0);
+
+  const TypeTuple *range = TypeTuple::make(TypeFunc::Parms+0,fields);
+
+  return TypeFunc::make(domain,range);
 }
 
 const TypeFunc *OptoRuntime::monitor_notify_Type() {
@@ -1261,7 +1284,8 @@ JRT_ENTRY_NO_ASYNC(address, OptoRuntime::handle_exception_C_helper(JavaThread* c
   assert(current->exception_oop() != nullptr, "exception oop is found");
   address handler_address = nullptr;
 
-  Handle exception(current, current->exception_oop());
+  Handle exception(current, WispThread::is_current_death_pending(current) ?
+    Universe::wisp_thread_death_exception() : current->exception_oop());
   address pc = current->exception_pc();
 
   // Clear out the exception oop and pc since looking up an

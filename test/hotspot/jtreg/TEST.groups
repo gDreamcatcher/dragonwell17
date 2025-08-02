@@ -396,6 +396,7 @@ tier1_runtime = \
  -runtime/Thread/TestThreadDumpMonitorContention.java \
  -runtime/Unsafe/RangeCheck.java \
   sanity/ \
+ -sanity/TestUnsupportedArguments.sh \
  -:tier1_runtime_appcds_exclude \
  -runtime/signal \
  -runtime/stack
@@ -727,4 +728,7 @@ vmTestbase_nsk_aod = \
 vmTestbase_nsk_jdb = \
   vmTestbase/nsk/jdb
 
+dragonwell_hs = \
+  runtime/coroutine \
+  gc/z
 # vmTestbase_*_quick groups are defined in TEST.quick-groups

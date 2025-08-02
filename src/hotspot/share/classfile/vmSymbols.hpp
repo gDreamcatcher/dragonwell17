@@ -265,6 +265,7 @@
   template(reflect_CallerSensitive,                   "jdk/internal/reflect/CallerSensitive")         \
   template(reflect_CallerSensitive_signature,         "Ljdk/internal/reflect/CallerSensitive;")       \
   template(reflect_NativeConstructorAccessorImpl,     "jdk/internal/reflect/NativeConstructorAccessorImpl")\
+  template(reflect_NativeMethodAccessorImpl,          "jdk/internal/reflect/NativeMethodAccessorImpl")\
   template(checkedExceptions_name,                    "checkedExceptions")                        \
   template(clazz_name,                                "clazz")                                    \
   template(exceptionTypes_name,                       "exceptionTypes")                           \
@@ -477,6 +478,8 @@
   template(module_entry_name,                         "module_entry")                             \
   template(resolved_references_name,                  "<resolved_references>")                    \
   template(init_lock_name,                            "<init_lock>")                              \
+  template(initializeWispClass_name,                  "initializeWispClass")                      \
+  template(startWispDaemons_name,                     "startWispDaemons")                         \
   template(address_size_name,                         "ADDRESS_SIZE0")                            \
   template(page_size_name,                            "PAGE_SIZE")                                \
   template(big_endian_name,                           "BIG_ENDIAN")                               \
@@ -533,6 +536,7 @@
   template(object_object_signature,                   "(Ljava/lang/Object;)Ljava/lang/Object;")   \
   template(string_void_signature,                     "(Ljava/lang/String;)V")                    \
   template(string_int_signature,                      "(Ljava/lang/String;)I")                    \
+  template(runnable_void_signature,                   "(Ljava/lang/Runnable;)V")                  \
   template(throwable_signature,                       "Ljava/lang/Throwable;")                    \
   template(throwable_void_signature,                  "(Ljava/lang/Throwable;)V")                 \
   template(void_throwable_signature,                  "()Ljava/lang/Throwable;")                  \
@@ -593,6 +597,9 @@
   template(char_StringBuffer_signature,               "(C)Ljava/lang/StringBuffer;")                              \
   template(int_String_signature,                      "(I)Ljava/lang/String;")                                    \
   template(boolean_boolean_int_signature,             "(ZZ)I")                                                    \
+  template(resourcecontainer_signature,               "Lcom/alibaba/rcm/internal/AbstractResourceContainer;")     \
+  template(controlGroup_signature,                    "Lcom/alibaba/wisp/engine/WispControlGroup;")               \
+  template(controlGroup_Limit_signature,              "Lcom/alibaba/wisp/engine/WispControlGroup$CpuLimit;")      \
   template(big_integer_shift_worker_signature,        "([I[IIII)V")                                               \
   template(reflect_method_signature,                  "Ljava/lang/reflect/Method;")                               \
   template(getStackTrace_signature,                    "()[Ljava/lang/StackTraceElement;")                        \
@@ -684,6 +691,60 @@
   template(classRedefinedCount_name,                   "classRedefinedCount")                                     \
   template(classLoader_name,                           "classLoader")                                             \
   template(componentType_name,                         "componentType")                                           \
+  /* coroutine support */                                                                                         \
+  template(java_dyn_CoroutineSupport,                  "java/dyn/CoroutineSupport")                               \
+  template(java_dyn_CoroutineBase,                     "java/dyn/CoroutineBase")                                  \
+  template(java_dyn_CoroutineExitException,            "java/dyn/CoroutineExitException")                         \
+  template(com_alibaba_wisp_engine_WispTask,           "com/alibaba/wisp/engine/WispTask")                        \
+  template(com_alibaba_wisp_engine_WispTask_CacheableCoroutine, "com/alibaba/wisp/engine/WispTask$CacheableCoroutine") \
+  template(com_alibaba_wisp_engine_WispControlGroup,   "com/alibaba/wisp/engine/WispControlGroup")                \
+  template(com_alibaba_wisp_engine_WispControlGroup_CpuLimit, "com/alibaba/wisp/engine/WispControlGroup$CpuLimit") \
+  template(com_alibaba_rcm_internal_AbstractResourceContainer, "com/alibaba/rcm/internal/AbstractResourceContainer") \
+  template(com_alibaba_wisp_engine_WispEngine,         "com/alibaba/wisp/engine/WispEngine")                      \
+  template(com_alibaba_wisp_engine_WispCarrier,        "com/alibaba/wisp/engine/WispCarrier")                     \
+  template(com_alibaba_wisp_engine_WispEventPump,      "com/alibaba/wisp/engine/WispEventPump")                   \
+  template(isInCritical_name,                          "isInCritical")                                            \
+  template(jdkParkStatus_name,                         "jdkParkStatus")                                           \
+  template(shutdownPending_name,                       "shutdownPending")                                         \
+  template(jvmParkStatus_name,                         "jvmParkStatus")                                           \
+  template(ttr_name,                                   "ttr")                                                     \
+  template(controlGroup_name,                          "controlGroup")                                            \
+  template(cpuLimit_name,                              "cpuLimit")                                                \
+  template(cfsPeriod_name,                             "cfsPeriod")                                               \
+  template(cfsQuota_name,                              "cfsQuota")                                                \
+  template(id_name,                                    "id")                                                      \
+  template(threadWrapper_name,                         "threadWrapper")                                           \
+  template(activeCount_name,                           "activeCount")                                             \
+  template(stealCount_name,                            "stealCount")                                              \
+  template(stealFailureCount_name,                     "stealFailureCount")                                       \
+  template(preemptCount_name,                          "preemptCount")                                            \
+  template(unparkById_name,                            "unparkById")                                              \
+  template(interruptById_name,                         "interruptById")                                           \
+  template(interrupted_name,                           "interrupted")                                             \
+  template(yield_name,                                 "yield")                                                   \
+  template(runOutsideWisp_name,                        "runOutsideWisp")                                          \
+  template(nativeCoroutine_name,                       "nativeCoroutine")                                         \
+  template(stack_name,                                 "stack")                                                   \
+  template(current_name,                               "current")                                                 \
+  template(java_dyn_CoroutineBase_signature,           "Ljava/dyn/CoroutineBase;")                                \
+  template(startInternal_method_name,                  "startInternal")                                           \
+  template(initializeCoroutineSupport_method_name,     "initializeCoroutineSupport")                              \
+  template(destroyCoroutineSupport_method_name,        "destroyCoroutineSupport")                                 \
+  template(bci_name,                                   "bci")                                                     \
+  template(localCount_name,                            "localCount")                                              \
+  template(expressionCount_name,                       "expressionCount")                                         \
+  template(scalarValues_name,                          "scalarValues")                                            \
+  template(objectValues_name,                          "objectValues")                                            \
+                                                                                                                  \
+  /* coroutine work steal support */                                                                              \
+  template(doPrivileged_name,                          "doPrivileged")                                            \
+  template(doPrivileged_signature_1,                   "(Ljava/security/PrivilegedAction;)Ljava/lang/Object;")    \
+  template(doPrivileged_signature_2,                   "(Ljava/security/PrivilegedAction;Ljava/security/AccessControlContext;)Ljava/lang/Object;")    \
+  template(doPrivileged_signature_3,                   "(Ljava/security/PrivilegedExceptionAction;)Ljava/lang/Object;")    \
+  template(doPrivileged_signature_4,                   "(Ljava/security/PrivilegedExceptionAction;Ljava/security/AccessControlContext;)Ljava/lang/Object;")    \
+  template(invoke0_name,                               "invoke0")                                                 \
+  template(invoke0_signature,                          "(Ljava/lang/reflect/Method;Ljava/lang/Object;[Ljava/lang/Object;)Ljava/lang/Object;")  \
+  template(newInstance0_signature,                     "(Ljava/lang/reflect/Constructor;[Ljava/lang/Object;)Ljava/lang/Object;")  \
                                                                                                                   \
   /* forEachRemaining support */                                                                                  \
   template(java_util_stream_StreamsRangeIntSpliterator,          "java/util/stream/Streams$RangeIntSpliterator")  \
@@ -768,7 +829,7 @@ class vmSymbols: AllStatic {
   }
 
   enum {
-    log2_SID_LIMIT = 11         // checked by an assert at start-up
+    log2_SID_LIMIT = 12 // checked by an assert at start-up
   };
 
  private:

@@ -192,6 +192,10 @@ CodeBlobClosure* NMethodSweeper::prepare_mark_active_nmethods() {
   return &mark_activation_closure;
 }
 
+CodeBlobClosure* NMethodSweeper::mark_active_closure() {
+  return &mark_activation_closure;
+}
+
 /**
   * This function triggers a VM operation that does stack scanning of active
   * methods. Stack scanning is mandatory for the sweeper to make progress.

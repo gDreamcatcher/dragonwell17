@@ -437,6 +437,27 @@ void Arguments::init_version_specific_system_properties() {
       new SystemProperty("java.vm.vendor", VM_Version::vm_vendor(),  false));
 }
 
+void Arguments::init_wisp_system_properties() {
+  // Convert coroutine flags to props to make java side aware of them.
+  PropertyList_add(&_system_properties,
+    new SystemProperty("com.alibaba.coroutine.enableCoroutine",
+      EnableCoroutine ? "true" : "false",  false));
+  if (UseWisp2) {
+    // Props set by user -D flags would override those default values.
+    PropertyList_add(&_system_properties,
+      new SystemProperty("com.alibaba.wisp.transparentWispSwitch",
+        "true",  true));
+    if (Arguments::get_property("com.alibaba.wisp.allThreadAsWisp") == NULL) {
+      PropertyList_add(&_system_properties,
+        new SystemProperty("com.alibaba.wisp.enableThreadAsWisp",
+          "true",  true));
+      PropertyList_add(&_system_properties,
+        new SystemProperty("com.alibaba.wisp.allThreadAsWisp",
+          "true",  true));
+    }
+  }
+}
+
 /*
  *  -XX argument processing:
  *
@@ -3940,6 +3961,47 @@ jint Arguments::parse(const JavaVMInitArgs* initial_cmd_args) {
 
   if (!handle_deprecated_print_gc_flags()) {
     return JNI_EINVAL;
+  }
+
+  if (UseWisp2) {
+    // check Compatibility
+    if (!EnableCoroutine && FLAG_IS_CMDLINE(EnableCoroutine)) {
+      warning("Wisp2 needs to enable -XX:+EnableCoroutine"
+              "; ignoring -XX:-EnableCoroutine." );
+    }
+    if (!UseWispMonitor && FLAG_IS_CMDLINE(UseWispMonitor)) {
+      warning("Wisp2 needs to enable -XX:+UseWispMonitor"
+              "; ignoring -XX:-UseWispMonitor." );
+    }
+    if (UseBiasedLocking && FLAG_IS_CMDLINE(UseBiasedLocking)) {
+      warning("Biased Locking is not supported with Wisp2"
+              "; ignoring UseBiasedLocking flag." );
+    }
+    // Turn on -XX:+EnableCoroutine, -XX:+UseWispMonitor
+    EnableCoroutine = true;
+    UseWispMonitor = true;
+    // Turn off -XX:-UseBiasedLocking
+    UseBiasedLocking = false;
+  } else {
+    if (EnableCoroutine) {
+      if (UseBiasedLocking && FLAG_IS_CMDLINE(UseBiasedLocking)) {
+        warning("Biased Locking is not supported with Wisp"
+                "; ignoring UseBiasedLocking flag." );
+      }
+      UseBiasedLocking = false;
+    }
+  }
+
+#ifndef LINUX
+  if (EnableCoroutine || UseWispMonitor) {
+    warning("Wisp supports Linux only"
+            "; ignore Wisp related flags");
+    EnableCoroutine = UseWispMonitor = false;
+  }
+#endif
+
+  if (Wisp2ThreadStop && !UseWisp2) {
+    vm_exit_during_initialization("Wisp2ThreadStop only works with UseWisp2");
   }
 
   // Set object alignment values.

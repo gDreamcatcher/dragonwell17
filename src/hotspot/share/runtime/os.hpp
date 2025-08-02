@@ -493,6 +493,8 @@ class os: AllStatic {
   static bool signal_thread(Thread* thread, int sig, const char* reason);
 
   static void free_thread(OSThread* osthread);
+  
+  static bool is_signal_dispatcher_thread(JavaThread* thread);
 
   // thread id on Linux/64bit is 64bit, on Windows it's 32bit
   static intx current_thread_id();

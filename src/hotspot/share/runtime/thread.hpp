@@ -90,6 +90,10 @@ class WorkerThread;
 
 class JavaThread;
 
+class Coroutine;
+class CoroutineStack;
+class WispThread;
+
 // Class hierarchy
 // - Thread
 //   - JavaThread
@@ -331,6 +335,7 @@ class Thread: public ThreadShadow {
   // Testers
   virtual bool is_VM_thread()       const            { return false; }
   virtual bool is_Java_thread()     const            { return false; }
+  virtual bool is_Wisp_thread()     const            { return false; }
   virtual bool is_Compiler_thread() const            { return false; }
   virtual bool is_Code_cache_sweeper_thread() const  { return false; }
   virtual bool is_service_thread() const             { return false; }
@@ -497,6 +502,9 @@ class Thread: public ThreadShadow {
   }
 
  public:
+  // Used by fast lock support
+  virtual bool is_lock_owned(address adr) const;
+
   // Check if address is within the given range of this thread's
   // stack:  stack_base() > adr >= limit
   bool is_in_stack_range_incl(address adr, address limit) const {
@@ -602,10 +610,16 @@ protected:
   void leaving_jvmti_env_iteration()             { --_jvmti_env_iteration_count; }
   bool is_inside_jvmti_env_iteration()           { return _jvmti_env_iteration_count > 0; }
 
+  // Coroutine
+  static ByteSize resource_area_offset()         { return byte_offset_of(Thread, _resource_area); }
+  static ByteSize handle_area_offset()           { return byte_offset_of(Thread, _handle_area); }
+  static ByteSize last_handle_mark_offset()      { return byte_offset_of(Thread, _last_handle_mark); }
+
   // Code generation
   static ByteSize exception_file_offset()        { return byte_offset_of(Thread, _exception_file); }
   static ByteSize exception_line_offset()        { return byte_offset_of(Thread, _exception_line); }
   static ByteSize active_handles_offset()        { return byte_offset_of(Thread, _active_handles); }
+  static ByteSize metadata_handles_offset()      { return byte_offset_of(Thread, _metadata_handles); }
 
   static ByteSize stack_base_offset()            { return byte_offset_of(Thread, _stack_base); }
   static ByteSize stack_size_offset()            { return byte_offset_of(Thread, _stack_size); }
@@ -635,8 +649,13 @@ protected:
 
   // Low-level leaf-lock primitives used to implement synchronization.
   // Not for general synchronization use.
+
+  // Default lock is int.
   static void SpinAcquire(volatile int * Lock, const char * Name);
   static void SpinRelease(volatile int * Lock);
+
+  static void SpinAcquireLongValue(volatile long * Lock, const char * Name, long value);
+  static void SpinReleaseLong(volatile long * Lock);
 
 #if defined(__APPLE__) && defined(AARCH64)
  private:
@@ -715,10 +734,10 @@ class JavaThread: public Thread {
   friend class ThreadsSMRSupport; // to access _threadObj for exiting_threads_oops_do
   friend class HandshakeState;
  private:
+  bool           _in_asgct;                      // Is set when this JavaThread is handling ASGCT call
   bool           _on_thread_list;                // Is set when this JavaThread is added to the Threads list
   OopHandle      _threadObj;                     // The Java level thread object
 
-#ifdef ASSERT
  private:
   int _java_call_counter;
 
@@ -730,7 +749,6 @@ class JavaThread: public Thread {
     _java_call_counter--;
   }
  private:  // restore original namespace restriction
-#endif  // ifdef ASSERT
 
   JavaFrameAnchor _anchor;                       // Encapsulation of current java frame and it state
 
@@ -762,6 +780,7 @@ class JavaThread: public Thread {
   // Used to pass back results to the interpreter or generated code running Java code.
   oop           _vm_result;    // oop result is GC-preserved
   Metadata*     _vm_result_2;  // non-oop result
+  oop           _vm_result_for_wisp;  // this oop result is only for java call in _monitorexit
 
   // See ReduceInitialCardMarks: this holds the precise space interval of
   // the most recent slow path allocation for which compiled code has
@@ -799,6 +818,9 @@ class JavaThread: public Thread {
   }
 
  private:
+  MonitorChunk* _monitor_chunks;              // Contains the off stack monitors
+                                              // allocated during deoptimization
+                                              // and by JNI_MonitorEnter/Exit
   enum SuspendFlags {
     // NOTE: avoid using the sign-bit as cc generates different test code
     //       when the sign-bit is used, and sometimes incorrectly - see CR 6398077
@@ -1045,6 +1067,30 @@ class JavaThread: public Thread {
   // failed reallocations.
   int _frames_to_pop_failed_realloc;
 
+  // coroutine support
+  volatile int      _coroutine_list_lock;
+  Coroutine*        _coroutine_list;
+  Coroutine*        _current_coroutine;
+  bool              _wisp_preempted;
+  volatile long     _nmethod_traversals;
+
+ public:
+  volatile int* const coroutine_list_lock()      { return &_coroutine_list_lock; }
+  Coroutine*& coroutine_list()                   { return _coroutine_list; }
+  Coroutine* current_coroutine()                 { return _current_coroutine; }
+  void set_current_coroutine(Coroutine *coro)    { _current_coroutine = coro; }
+  bool wisp_preempted() const                    { return _wisp_preempted; }
+  void set_wisp_preempted(bool b)                { _wisp_preempted = b; }
+  void set_nmethod_traversals(long n)            { Atomic::release_store(&_nmethod_traversals, n); }
+  long nmethod_traversals() const                { return Atomic::load_acquire(&_nmethod_traversals); }
+
+  static ByteSize monitor_chunks_offset()        { return byte_offset_of(JavaThread, _monitor_chunks); }
+  static ByteSize current_coroutine_offset()     { return byte_offset_of(JavaThread, _current_coroutine); }
+  void initialize_thread_coroutine();
+
+  bool is_expected_thread_entry(ThreadFunction entry_point) { return _entry_point == entry_point; }
+ private:
+
   friend class VMThread;
   friend class ThreadWaitTransition;
   friend class VM_Exit;
@@ -1238,6 +1284,8 @@ class JavaThread: public Thread {
 
   Metadata*    vm_result_2() const               { return _vm_result_2; }
   void set_vm_result_2  (Metadata* x)          { _vm_result_2   = x; }
+  oop  vm_result_for_wisp() const                { return _vm_result_for_wisp; }
+  void set_vm_result_for_wisp  (oop x)           { _vm_result_for_wisp   = x; }
 
   MemRegion deferred_card_mark() const           { return _deferred_card_mark; }
   void set_deferred_card_mark(MemRegion mr)      { _deferred_card_mark = mr;   }
@@ -1303,6 +1351,7 @@ class JavaThread: public Thread {
   static ByteSize callee_target_offset()         { return byte_offset_of(JavaThread, _callee_target); }
   static ByteSize vm_result_offset()             { return byte_offset_of(JavaThread, _vm_result); }
   static ByteSize vm_result_2_offset()           { return byte_offset_of(JavaThread, _vm_result_2); }
+  static ByteSize vm_result_for_wisp_offset()    { return byte_offset_of(JavaThread, _vm_result_for_wisp ); }
   static ByteSize thread_state_offset()          { return byte_offset_of(JavaThread, _thread_state); }
   static ByteSize polling_word_offset()          { return byte_offset_of(JavaThread, _poll_data) + byte_offset_of(SafepointMechanism::ThreadData, _polling_word);}
   static ByteSize polling_page_offset()          { return byte_offset_of(JavaThread, _poll_data) + byte_offset_of(SafepointMechanism::ThreadData, _polling_page);}
@@ -1322,17 +1371,25 @@ class JavaThread: public Thread {
   static ByteSize is_method_handle_return_offset() { return byte_offset_of(JavaThread, _is_method_handle_return); }
 
   // StackOverflow offsets
-  static ByteSize stack_overflow_limit_offset()  {
+  static ByteSize stack_overflow_limit_offset()      {
     return byte_offset_of(JavaThread, _stack_overflow_state._stack_overflow_limit);
   }
-  static ByteSize stack_guard_state_offset()     {
+  static ByteSize stack_guard_state_offset()         {
     return byte_offset_of(JavaThread, _stack_overflow_state._stack_guard_state);
   }
   static ByteSize reserved_stack_activation_offset() {
     return byte_offset_of(JavaThread, _stack_overflow_state._reserved_stack_activation);
   }
+  static ByteSize stack_base_offset()                {
+    return byte_offset_of(JavaThread, _stack_overflow_state._stack_base);
+  }
+  static ByteSize stack_end_offset()                 {
+    return byte_offset_of(JavaThread, _stack_overflow_state._stack_end);
+  }
 
   static ByteSize suspend_flags_offset()         { return byte_offset_of(JavaThread, _suspend_flags); }
+  static ByteSize java_call_counter_offset()     { return byte_offset_of(JavaThread, _java_call_counter); }
+  static ByteSize coroutine_list_offset()        { return byte_offset_of(JavaThread, _coroutine_list); }
 
   static ByteSize do_not_unlock_if_synchronized_offset() { return byte_offset_of(JavaThread, _do_not_unlock_if_synchronized); }
   static ByteSize should_post_on_exceptions_flag_offset() {
@@ -1380,7 +1437,13 @@ class JavaThread: public Thread {
   int depth_first_number() { return _depth_first_number; }
   void set_depth_first_number(int dfn) { _depth_first_number = dfn; }
 
+ private:
+  void set_monitor_chunks(MonitorChunk* monitor_chunks) { _monitor_chunks = monitor_chunks; }
+
  public:
+  MonitorChunk* monitor_chunks() const           { return _monitor_chunks; }
+  void add_monitor_chunk(MonitorChunk* chunk);
+  void remove_monitor_chunk(MonitorChunk* chunk);
   bool in_deopt_handler() const                  { return _in_deopt_handler > 0; }
   void inc_in_deopt_handler()                    { _in_deopt_handler++; }
   void dec_in_deopt_handler() {
@@ -1572,7 +1635,7 @@ class JavaThread: public Thread {
   ThreadStatistics *_thread_stat;
 
  public:
-  ThreadStatistics* get_thread_stat() const    { return _thread_stat; }
+  ThreadStatistics* get_thread_stat() const;
 
   // Return a blocker object for which this thread is blocked parking.
   oop current_park_blocker();
@@ -1609,6 +1672,9 @@ class JavaThread: public Thread {
   bool has_attached_via_jni() const { return is_attaching_via_jni() || _jni_attach_state == _attached_via_jni; }
   inline void set_done_attaching_via_jni();
 
+  bool has_aync_thread_death_exception();
+  void clear_aync_thread_death_exception();
+
   // Stack dump assistance:
   // Track the class we want to initialize but for which we have to wait
   // on its init_lock() because it is already being initialized.
@@ -1626,10 +1692,15 @@ public:
   // java.lang.Thread interruption support
   void interrupt();
   bool is_interrupted(bool clear_interrupted);
+  bool clear_interrupt_for_wisp();
 
   static OopStorage* thread_oop_storage();
 
   static void verify_cross_modify_fence_failure(JavaThread *thread) PRODUCT_RETURN;
+
+  // AsyncGetCallTrace support
+  inline bool in_asgct(void) {return _in_asgct;}
+  inline void set_in_asgct(bool value) {_in_asgct = value;}
 
   // Helper function to start a VM-internal daemon thread.
   // E.g. ServiceThread, NotificationThread, CompilerThread etc.

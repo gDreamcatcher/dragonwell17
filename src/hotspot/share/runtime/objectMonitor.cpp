@@ -50,7 +50,9 @@
 #include "runtime/safefetch.hpp"
 #include "runtime/safepointMechanism.inline.hpp"
 #include "runtime/sharedRuntime.hpp"
+#include "runtime/thread.hpp"
 #include "runtime/thread.inline.hpp"
+#include "runtime/coroutine.hpp"
 #include "services/threadService.hpp"
 #include "utilities/dtrace.hpp"
 #include "utilities/macros.hpp"
@@ -321,6 +323,9 @@ void ObjectMonitor::ClearSuccOnSuspend::operator()(JavaThread* current) {
 bool ObjectMonitor::enter(JavaThread* current) {
   // The following code is ordered to check the most common cases first
   // and to reduce RTS->RTO cache line upgrades on SPARC and IA32 processors.
+  if (UseWispMonitor) {
+    current = WispThread::current(current);
+  }
 
   void* cur = try_set_owner_from(NULL, current);
   if (cur == NULL) {
@@ -342,7 +347,7 @@ bool ObjectMonitor::enter(JavaThread* current) {
   }
 
   // We've encountered genuine contention.
-  assert(current->_Stalled == 0, "invariant");
+  assert(current->_Stalled == 0 || UseWispMonitor, "invariant");
   current->_Stalled = intptr_t(this);
 
   // Try one round of spinning *before* enqueueing current
@@ -383,7 +388,8 @@ bool ObjectMonitor::enter(JavaThread* current) {
     return false;
   }
 
-  JFR_ONLY(JfrConditionalFlushWithStacktrace<EventJavaMonitorEnter> flush(current);)
+  JFR_ONLY(JfrConditionalFlushWithStacktrace<EventJavaMonitorEnter> flush(UseWispMonitor ? ((WispThread*)current)->thread() : current);)
+  JFR_ONLY(WispPostStealHandleUpdateMark w(flush.thread_ref());)
   EventJavaMonitorEnter event;
   if (event.is_started()) {
     event.set_monitorClass(object()->klass());
@@ -417,7 +423,12 @@ bool ObjectMonitor::enter(JavaThread* current) {
     for (;;) {
       ExitOnSuspend eos(this);
       {
-        ThreadBlockInVMPreprocess<ExitOnSuspend> tbivs(current, eos);
+        // If UseWispMonitor, We should record the stack frame and Thread status onto the
+        // JavaThread which corresponds to the WispThread, instead of WispThread itself.
+        ThreadBlockInVMPreprocess<ExitOnSuspend> tbivs(UseWispMonitor ? ((WispThread*)current)->thread(): current, eos);
+
+        // Coroutine work steal support
+        WispPostStealHandleUpdateMark w(UseWispMonitor ? ((WispThread*)current)->thread() : current, (ThreadStateTransition &)tbivs);
         EnterI(current);
         current->set_current_pending_monitor(NULL);
         // We can go to a safepoint at the end of this block. If we
@@ -483,6 +494,9 @@ bool ObjectMonitor::enter(JavaThread* current) {
 // Callers must compensate as needed.
 
 int ObjectMonitor::TryLock(JavaThread* current) {
+  if (UseWispMonitor) {
+    current = WispThread::current(current);
+  }
   void* own = owner_raw();
   if (own != NULL) return 0;
   if (try_set_owner_from(NULL, current) == NULL) {
@@ -678,7 +692,12 @@ const char* ObjectMonitor::is_busy_to_string(stringStream* ss) {
 #define MAX_RECHECK_INTERVAL 1000
 
 void ObjectMonitor::EnterI(JavaThread* current) {
-  assert(current->thread_state() == _thread_blocked, "invariant");
+  if (UseWispMonitor) {
+    current = WispThread::current(current);
+  }
+  assert(current->thread_state() == _thread_blocked ||
+    UseWispMonitor && ((WispThread*) current)->thread()->thread_state() == _thread_blocked,
+    "invariant");
 
   // Try the lock - TATAS
   if (TryLock (current) > 0) {
@@ -740,6 +759,9 @@ void ObjectMonitor::EnterI(JavaThread* current) {
   current->_ParkEvent->reset();
   node._prev   = (ObjectWaiter*) 0xBAD;
   node.TState  = ObjectWaiter::TS_CXQ;
+  if (UseWispMonitor) {
+    ((WispThread*) current)->before_enqueue(this, &node);
+  }
 
   // Push "current" onto the front of the _cxq.
   // Once on cxq/EntryList, current stays on-queue until it acquires the lock.
@@ -810,14 +832,22 @@ void ObjectMonitor::EnterI(JavaThread* current) {
 
     // park self
     if (_Responsible == current) {
-      current->_ParkEvent->park((jlong) recheckInterval);
+      if (UseWispMonitor) {
+        WispThread::park(recheckInterval, &node);
+      } else {
+        current->_ParkEvent->park((jlong) recheckInterval);
+      }
       // Increase the recheckInterval, but clamp the value.
       recheckInterval *= 8;
       if (recheckInterval > MAX_RECHECK_INTERVAL) {
         recheckInterval = MAX_RECHECK_INTERVAL;
       }
     } else {
-      current->_ParkEvent->park();
+      if (UseWispMonitor) {
+        WispThread::park(-1, &node);
+      } else {
+        current->_ParkEvent->park();
+      }
     }
 
     if (TryLock(current) > 0) break;
@@ -938,6 +968,9 @@ void ObjectMonitor::EnterI(JavaThread* current) {
 // In the future we should reconcile EnterI() and ReenterI().
 
 void ObjectMonitor::ReenterI(JavaThread* current, ObjectWaiter* currentNode) {
+  if (UseWispMonitor) {
+    current = WispThread::current(current);
+  }
   assert(current != NULL, "invariant");
   assert(currentNode != NULL, "invariant");
   assert(currentNode->_thread == current, "invariant");
@@ -962,8 +995,15 @@ void ObjectMonitor::ReenterI(JavaThread* current, ObjectWaiter* currentNode) {
 
       {
         ClearSuccOnSuspend csos(this);
-        ThreadBlockInVMPreprocess<ClearSuccOnSuspend> tbivs(current, csos);
-        current->_ParkEvent->park();
+        ThreadBlockInVMPreprocess<ClearSuccOnSuspend> tbivs(UseWispMonitor ? ((WispThread *)current)->thread() : current, csos);
+
+        // Coroutine work steal support
+        WispPostStealHandleUpdateMark w(UseWispMonitor ? ((WispThread*)current)->thread() : current, (ThreadStateTransition &)tbivs);
+        if (UseWispMonitor) {
+          WispThread::park(-1, currentNode);
+        } else {
+          current->_ParkEvent->park();
+        }
       }
     }
 
@@ -1014,6 +1054,9 @@ void ObjectMonitor::ReenterI(JavaThread* current, ObjectWaiter* currentNode) {
 // unlinking the thread until ::exit()-time.
 
 void ObjectMonitor::UnlinkAfterAcquire(JavaThread* current, ObjectWaiter* currentNode) {
+  if (UseWispMonitor) {
+    current = WispThread::current(current);
+  }
   assert(owner_raw() == current, "invariant");
   assert(currentNode->_thread == current, "invariant");
 
@@ -1133,6 +1176,9 @@ void ObjectMonitor::UnlinkAfterAcquire(JavaThread* current, ObjectWaiter* curren
 // of such futile wakups is low.
 
 void ObjectMonitor::exit(JavaThread* current, bool not_suspended) {
+  if (UseWispMonitor) {
+    current = WispThread::current(current);
+  }
   void* cur = owner_raw();
   if (current != cur) {
     if (current->is_lock_owned((address)cur)) {
@@ -1155,6 +1201,14 @@ void ObjectMonitor::exit(JavaThread* current, bool not_suspended) {
                     " is exiting an ObjectMonitor it does not own.", p2i(current));
       lsh.print_cr("The imbalance is possibly caused by JNI locking.");
       print_debug_style_on(&lsh);
+      if (UseWispMonitor) {
+        JavaThread *pt = ((WispThread*)current)->thread();
+        tty->print_cr("[Wisp] Fatal IMSX: this=%p, pt=%p, current_coroutine=%p, self=%p (stack: %p - %p), _owner=%p, _owner->coro=%p",
+                this, pt, ((JavaThread*)pt)->current_coroutine(), current,
+                ((WispThread*)current)->coroutine()->stack()->stack_base(),
+                ((WispThread*)current)->coroutine()->stack()->stack_base() - ((WispThread*)current)->coroutine()->stack()->stack_size(),
+                _owner, ((WispThread*)_owner)->coroutine());
+      }
       assert(false, "Non-balanced monitor enter/exit!");
 #endif
       return;
@@ -1312,6 +1366,9 @@ void ObjectMonitor::exit(JavaThread* current, bool not_suspended) {
 }
 
 void ObjectMonitor::ExitEpilog(JavaThread* current, ObjectWaiter* Wakee) {
+  if (UseWispMonitor) {
+    current = WispThread::current(current);
+  }
   assert(owner_raw() == current, "invariant");
 
   // Exit protocol:
@@ -1322,6 +1379,11 @@ void ObjectMonitor::ExitEpilog(JavaThread* current, ObjectWaiter* Wakee) {
 
   _succ = Wakee->_thread;
   ParkEvent * Trigger = Wakee->_event;
+  const int  wisp_id  = Wakee->_park_wisp_id;
+  const bool use_wisp = Wakee->_using_wisp_park;
+  const bool proxy_unpark = Wakee->_proxy_wisp_unpark;
+  WispThread* wisp_thread = (WispThread*)Wakee->_thread;
+
 
   // Hygiene -- once we've set _owner = NULL we can't safely dereference Wakee again.
   // The thread associated with Wakee may have grabbed the lock and "Wakee" may be
@@ -1334,7 +1396,11 @@ void ObjectMonitor::ExitEpilog(JavaThread* current, ObjectWaiter* Wakee) {
   OrderAccess::fence();
 
   DTRACE_MONITOR_PROBE(contended__exit, this, object(), current);
-  Trigger->unpark();
+  if (UseWispMonitor) {
+    WispThread::unpark(wisp_id, use_wisp, proxy_unpark, Trigger, wisp_thread, current);
+  } else {
+    Trigger->unpark();
+  }
 
   // Maintain stats and report events to JVMTI
   OM_PERFDATA_OP(Parks, inc());
@@ -1351,6 +1417,9 @@ void ObjectMonitor::ExitEpilog(JavaThread* current, ObjectWaiter* Wakee) {
 // inflated monitor, e.g. the monitor can be inflated by a non-owning
 // thread due to contention.
 intx ObjectMonitor::complete_exit(JavaThread* current) {
+  if (UseWispMonitor) {
+    current = WispThread::current(current);
+  }
   assert(InitDone, "Unexpectedly not initialized");
 
   void* cur = owner_raw();
@@ -1402,6 +1471,9 @@ bool ObjectMonitor::reenter(intx recursions, JavaThread* current) {
 // (IMSE). If there is a pending exception and the specified thread
 // is not the owner, that exception will be replaced by the IMSE.
 bool ObjectMonitor::check_owner(TRAPS) {
+  if (UseWispMonitor) {
+    THREAD = WispThread::current(THREAD);
+  }
   JavaThread* current = THREAD;
   void* cur = owner_raw();
   if (cur == current) {
@@ -1444,12 +1516,26 @@ static void post_monitor_wait_event(EventJavaMonitorWait* event,
   event->commit();
 }
 
+// is_interrupted method is not virtual.
+// So we should dispatch it by type convertion.
+static bool check_interrupt(Thread* current, bool clear_interrupted) {
+  if (UseWispMonitor) {
+    assert(current->is_Wisp_thread(), "must be");
+    return ((WispThread*) current)->is_interrupted(clear_interrupted);
+  } else {
+    return ((JavaThread*) current)->is_interrupted(clear_interrupted);
+  }
+}
+
 // -----------------------------------------------------------------------------
 // Wait/Notify/NotifyAll
 //
 // Note: a subset of changes to ObjectMonitor::wait()
 // will need to be replicated in complete_exit
 void ObjectMonitor::wait(jlong millis, bool interruptible, TRAPS) {
+  if (UseWispMonitor) {
+    THREAD = WispThread::current(THREAD);
+  }
   JavaThread* current = THREAD;
 
   assert(InitDone, "Unexpectedly not initialized");
@@ -1459,7 +1545,9 @@ void ObjectMonitor::wait(jlong millis, bool interruptible, TRAPS) {
   EventJavaMonitorWait event;
 
   // check for a pending interrupt
-  if (interruptible && current->is_interrupted(true) && !HAS_PENDING_EXCEPTION) {
+  if (interruptible && check_interrupt(current, true) &&
+      !(UseWispMonitor ?
+        ((WispThread *)current)->thread()->has_pending_exception() : HAS_PENDING_EXCEPTION)) {
     // post monitor waited event.  Note that this is past-tense, we are done waiting.
     if (JvmtiExport::should_post_monitor_waited()) {
       // Note: 'false' parameter is passed here because the
@@ -1481,7 +1569,7 @@ void ObjectMonitor::wait(jlong millis, bool interruptible, TRAPS) {
     return;
   }
 
-  assert(current->_Stalled == 0, "invariant");
+  assert(current->_Stalled == 0 || UseWispMonitor, "invariant");
   current->_Stalled = intptr_t(this);
   current->set_current_waiting_monitor(this);
 
@@ -1491,6 +1579,10 @@ void ObjectMonitor::wait(jlong millis, bool interruptible, TRAPS) {
   ObjectWaiter node(current);
   node.TState = ObjectWaiter::TS_WAIT;
   current->_ParkEvent->reset();
+  if (UseWispMonitor) {
+    ((WispThread*) current)->before_enqueue(this, &node);
+  }
+
   OrderAccess::fence();          // ST into Event; membar ; LD interrupted-flag
 
   // Enter the waiting queue, which is a circular doubly linked list in this case
@@ -1523,7 +1615,7 @@ void ObjectMonitor::wait(jlong millis, bool interruptible, TRAPS) {
   int WasNotified = 0;
 
   // Need to check interrupt state whilst still _thread_in_vm
-  bool interrupted = interruptible && current->is_interrupted(false);
+  bool interrupted = interruptible && check_interrupt(current, false);
 
   { // State transition wrappers
     OSThread* osthread = current->osthread();
@@ -1533,14 +1625,22 @@ void ObjectMonitor::wait(jlong millis, bool interruptible, TRAPS) {
 
     {
       ClearSuccOnSuspend csos(this);
-      ThreadBlockInVMPreprocess<ClearSuccOnSuspend> tbivs(current, csos);
-      if (interrupted || HAS_PENDING_EXCEPTION) {
+      ThreadBlockInVMPreprocess<ClearSuccOnSuspend> tbivs(UseWispMonitor ? ((WispThread*)current)->thread() : current, csos);
+
+      // Coroutine work steal support
+      WispPostStealHandleUpdateMark w(UseWispMonitor ? ((WispThread*)current)->thread() : current, (ThreadStateTransition &)tbivs);
+
+      if (interrupted || (UseWispMonitor ? ((WispThread*)current)->thread()->has_pending_exception() : HAS_PENDING_EXCEPTION)) {
         // Intentionally empty
       } else if (node._notified == 0) {
-        if (millis <= 0) {
-          current->_ParkEvent->park();
+        if (UseWispMonitor) {
+          WispThread::park(millis, &node);
         } else {
-          ret = current->_ParkEvent->park(millis);
+          if (millis <= 0) {
+            current->_ParkEvent->park();
+          } else {
+            ret = current->_ParkEvent->park(millis);
+          }
         }
       }
     }
@@ -1606,7 +1706,11 @@ void ObjectMonitor::wait(jlong millis, bool interruptible, TRAPS) {
         // We redo the unpark() to ensure forward progress, i.e., we
         // don't want all pending threads hanging (parked) with none
         // entering the unlocked monitor.
-        node._event->unpark();
+        if (UseWispMonitor) {
+          WispThread::unpark(&node, THREAD);
+        } else {
+          node._event->unpark();
+        }
       }
     }
 
@@ -1616,7 +1720,7 @@ void ObjectMonitor::wait(jlong millis, bool interruptible, TRAPS) {
 
     OrderAccess::fence();
 
-    assert(current->_Stalled != 0, "invariant");
+    assert(current->_Stalled != 0 || UseWispMonitor, "invariant");
     current->_Stalled = 0;
 
     assert(owner_raw() != current, "invariant");
@@ -1654,7 +1758,8 @@ void ObjectMonitor::wait(jlong millis, bool interruptible, TRAPS) {
   if (!WasNotified) {
     // no, it could be timeout or Thread.interrupt() or both
     // check for interrupt event, otherwise it is timeout
-    if (interruptible && current->is_interrupted(true) && !HAS_PENDING_EXCEPTION) {
+    if (interruptible && check_interrupt(current, true) &&
+        !(UseWispMonitor ? ((WispThread *)current)->thread()->has_pending_exception() : HAS_PENDING_EXCEPTION)) {
       THROW(vmSymbols::java_lang_InterruptedException());
     }
   }
@@ -1670,6 +1775,9 @@ void ObjectMonitor::wait(jlong millis, bool interruptible, TRAPS) {
 // we might just dequeue a thread from the WaitSet and directly unpark() it.
 
 void ObjectMonitor::INotify(JavaThread* current) {
+  if (UseWispMonitor) {
+    current = WispThread::current(current);
+  }
   Thread::SpinAcquire(&_WaitSetLock, "WaitSet - notify");
   ObjectWaiter* iterator = DequeueWaiter();
   if (iterator != NULL) {
@@ -1732,6 +1840,9 @@ void ObjectMonitor::INotify(JavaThread* current) {
 // that suggests a lost wakeup bug.
 
 void ObjectMonitor::notify(TRAPS) {
+  if (UseWispMonitor) {
+    THREAD = WispThread::current(THREAD);
+  }
   JavaThread* current = THREAD;
   CHECK_OWNER();  // Throws IMSE if not owner.
   if (_WaitSet == NULL) {
@@ -1751,6 +1862,9 @@ void ObjectMonitor::notify(TRAPS) {
 // mode the waitset will be empty and the EntryList will be "DCBAXYZ".
 
 void ObjectMonitor::notifyAll(TRAPS) {
+  if (UseWispMonitor) {
+    THREAD = WispThread::current(THREAD);
+  }
   JavaThread* current = THREAD;
   CHECK_OWNER();  // Throws IMSE if not owner.
   if (_WaitSet == NULL) {
@@ -1835,6 +1949,9 @@ void ObjectMonitor::notifyAll(TRAPS) {
 
 // Spinning: Fixed frequency (100%), vary duration
 int ObjectMonitor::TrySpin(JavaThread* current) {
+  if (UseWispMonitor) {
+    current = WispThread::current(current);
+  }
   // Dumb, brutal spin.  Good for comparative measurements against adaptive spinning.
   int ctr = Knob_FixedSpin;
   if (ctr != 0) {
@@ -2070,6 +2187,11 @@ ObjectWaiter::ObjectWaiter(JavaThread* current) {
   TState    = TS_RUN;
   _thread   = current;
   _event    = _thread->_ParkEvent;
+  if (UseWispMonitor && current->is_Wisp_thread()) {
+    // JvmtiRawMonitor::SimpleWait use this class directly.
+    // In this scenario, JavaThread* is passed even UseWispMonitor enabled
+    _event  = ((WispThread*)current)->thread()->_ParkEvent ;
+  }
   _active   = false;
   assert(_event != NULL, "invariant");
 }

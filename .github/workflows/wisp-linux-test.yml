@@ -1,0 +1,178 @@
+#
+# Copyright (c) 2022, 2024, Oracle and/or its affiliates. All rights reserved.
+# DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
+#
+# This code is free software; you can redistribute it and/or modify it
+# under the terms of the GNU General Public License version 2 only, as
+# published by the Free Software Foundation.  Oracle designates this
+# particular file as subject to the "Classpath" exception as provided
+# by Oracle in the LICENSE file that accompanied this code.
+#
+# This code is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+# FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
+# version 2 for more details (a copy is included in the LICENSE file that
+# accompanied this code).
+#
+# You should have received a copy of the GNU General Public License version
+# 2 along with this work; if not, write to the Free Software Foundation,
+# Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
+#
+# Please contact Oracle, 500 Oracle Parkway, Redwood Shores, CA 94065 USA
+# or visit www.oracle.com if you need additional information or have any
+# questions.
+#
+
+name: 'wisp build and test'
+
+on:
+  push:
+    branches-ignore:
+      - master
+      - pr/*
+  workflow_dispatch:
+    inputs:
+      platforms:
+        description: 'Platform(s) to execute on (comma separated, e.g. "linux-x64, macos, aarch64")'
+        required: true
+        default: 'linux-x64'
+      configure-arguments:
+        description: 'Additional configure arguments'
+        required: false
+      make-arguments:
+        description: 'Additional make arguments'
+        required: false
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+
+  ###
+  ### Determine platforms to include
+  ###
+
+  prepare:
+    name: 'Prepare the run'
+    runs-on: ubuntu-22.04
+    outputs:
+      linux-x64: ${{ steps.include.outputs.linux-x64 }}
+
+    steps:
+      - name: 'Checkout the scripts'
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            .github
+            make/conf/github-actions.conf
+
+      - name: 'Build JTReg'
+        id: jtreg
+        uses: ./.github/actions/build-jtreg
+
+      # TODO: Now that we are checking out the repo scripts, we can put the following code
+      # into a separate file
+      - name: 'Check what jobs to run'
+        id: include
+        run: |
+          # Determine which platform jobs to run
+
+          # Returns 'true' if the input platform list matches any of the platform monikers given as argument,
+          # 'false' otherwise.
+          # arg $1: platform name or names to look for
+          function check_platform() {
+            if [[ $GITHUB_EVENT_NAME == workflow_dispatch ]]; then
+              input='${{ github.event.inputs.platforms }}'
+            elif [[ $GITHUB_EVENT_NAME == push ]]; then
+              if [[ '${{ !secrets.JDK_SUBMIT_FILTER || startsWith(github.ref, 'refs/heads/submit/') }}' == 'false' ]]; then
+                # If JDK_SUBMIT_FILTER is set, and this is not a "submit/" branch, don't run anything
+                >&2 echo 'JDK_SUBMIT_FILTER is set and not a "submit/" branch'
+                echo 'false'
+                return
+              else
+                input='${{ secrets.JDK_SUBMIT_PLATFORMS }}'
+              fi
+            fi
+
+            normalized_input="$(echo ,$input, | tr -d ' ')"
+            if [[ "$normalized_input" == ",," ]]; then
+              # For an empty input, assume all platforms should run
+              echo 'true'
+              return
+            else
+              # Check for all acceptable platform names
+              for part in $* ; do
+                if echo "$normalized_input" | grep -q -e ",$part," ; then
+                  echo 'true'
+                  return
+                fi
+              done
+            fi
+
+            echo 'false'
+          }
+
+          echo "linux-x64=$(check_platform linux-x64 linux x64)" >> $GITHUB_OUTPUT
+
+
+
+  ###
+  ### Build jobs
+  ###
+
+  build-linux-x64:
+    name: linux-x64
+    needs: prepare
+    uses: ./.github/workflows/build-linux.yml
+    with:
+      platform: linux-x64
+      gcc-major-version: '10'
+      configure-arguments: ${{ github.event.inputs.configure-arguments }}
+      make-arguments: ${{ github.event.inputs.make-arguments }}
+    if: needs.prepare.outputs.linux-x64 == 'true'
+
+
+  ###
+  ### Test jobs
+  ###
+
+  test-linux-x64:
+    name: linux-x64
+    needs:
+      - build-linux-x64
+    uses: ./.github/workflows/test.yml
+    with:
+      platform: linux-x64
+      bootjdk-platform: linux-x64
+      runs-on: ubuntu-22.04
+
+  remove-bundles:
+    name: 'Remove bundle artifacts'
+    runs-on: ubuntu-22.04
+    if: always()
+    needs:
+      - build-linux-x64
+      - test-linux-x64
+
+    steps:
+      - name: 'Remove bundle artifacts'
+        run: |
+          # Find and remove all bundle artifacts
+          # See: https://docs.github.com/en/rest/actions/artifacts?apiVersion=2022-11-28
+          ALL_ARTIFACT_IDS="$(curl -sL \
+              -H 'Accept: application/vnd.github+json' \
+              -H 'Authorization: Bearer ${{ github.token }}' \
+              -H 'X-GitHub-Api-Version: 2022-11-28' \
+              '${{ github.api_url }}/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts?per_page=100')"
+          BUNDLE_ARTIFACT_IDS="$(echo "$ALL_ARTIFACT_IDS" | jq -r -c '.artifacts | map(select(.name|startswith("bundles-"))) | .[].id')"
+          for id in $BUNDLE_ARTIFACT_IDS; do
+            echo "Removing $id"
+            curl -sL \
+                -X DELETE \
+                -H 'Accept: application/vnd.github+json' \
+                -H 'Authorization: Bearer ${{ github.token }}' \
+                -H 'X-GitHub-Api-Version: 2022-11-28' \
+                "${{ github.api_url }}/repos/${{ github.repository }}/actions/artifacts/$id" \
+            || echo "Failed to remove bundle"
+          done

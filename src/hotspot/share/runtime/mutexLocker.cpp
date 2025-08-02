@@ -25,6 +25,7 @@
 #include "precompiled.hpp"
 #include "gc/shared/gc_globals.hpp"
 #include "memory/universe.hpp"
+#include "runtime/coroutine.hpp"
 #include "runtime/mutexLocker.hpp"
 #include "runtime/os.inline.hpp"
 #include "runtime/safepoint.hpp"
@@ -41,7 +42,7 @@
 
 Mutex*   Patching_lock                = NULL;
 Mutex*   CompiledMethod_lock          = NULL;
-Monitor* SystemDictionary_lock        = NULL;
+Monitor* SystemDictionary_monitor_lock= NULL;
 Mutex*   SharedDictionary_lock        = NULL;
 Monitor* ClassInitError_lock          = NULL;
 Mutex*   Module_lock                  = NULL;
@@ -164,6 +165,10 @@ Monitor* JVMCI_lock                   = NULL;
 #endif
 
 
+SystemDictMonitor* SystemDictionary_lock = NULL;
+
+Monitor* Wisp_lock                    = NULL;
+
 #define MAX_NUM_MUTEX 128
 static Mutex* _mutex_array[MAX_NUM_MUTEX];
 static int _num_mutex;
@@ -198,6 +203,38 @@ void assert_locked_or_safepoint_or_handshake(const Mutex* lock, const JavaThread
   if (thread->is_handshake_safe_for(Thread::current())) return;
   assert_locked_or_safepoint(lock);
 }
+
+static bool is_owner(const SystemDictMonitor* lock, Thread* THREAD) {
+  if (lock->is_obj_lock()) {
+    assert(UseWispMonitor, "should UseWispMonitor");
+    WispThread* wt = WispThread::current(Thread::current());
+    if (ObjectSynchronizer::current_thread_holds_lock(wt, Handle(Thread::current(), lock->obj()))) {
+      return true;
+    }
+  } else if (lock->monitor()->owner() == THREAD) {
+    return true;
+  }
+  return false;
+}
+
+void assert_lock_strong(const SystemDictMonitor* lock) {
+  assert(lock != NULL, "Need non-NULL lock");
+  if (is_owner(lock, Thread::current())) return;
+  fatal("must own lock %s", lock->monitor()->name());
+}
+
+void assert_locked_or_safepoint(const SystemDictMonitor* lock) {
+  // check if this thread owns the lock (common case)
+  assert(lock != NULL, "Need non-NULL lock");
+  if (SafepointSynchronize::is_at_safepoint()) return;
+  if (is_owner(lock, Thread::current())) return;
+  if (!Universe::is_fully_initialized()) return;
+  // see if invoker of VM operation owns it
+  VM_Operation* op = VMThread::vm_operation();
+  if (op != NULL && is_owner(lock, op->calling_thread())) return;
+  fatal("must own lock %s", lock->monitor()->name());
+}
+
 #endif
 
 #define def(var, type, pri, vm_block, safepoint_check_allowed ) {      \
@@ -254,7 +291,7 @@ void mutex_init() {
 
   def(JmethodIdCreation_lock       , PaddedMutex  , special-2,   true,  _safepoint_check_never); // used for creating jmethodIDs.
 
-  def(SystemDictionary_lock        , PaddedMonitor, leaf,        true,  _safepoint_check_always);
+  def(SystemDictionary_monitor_lock, PaddedMonitor, leaf,        true,  _safepoint_check_always);
   def(SharedDictionary_lock        , PaddedMutex  , leaf,        true,  _safepoint_check_always);
   def(ClassInitError_lock          , PaddedMonitor, leaf+1,      true,  _safepoint_check_always);
   def(Module_lock                  , PaddedMutex  , leaf+2,      false, _safepoint_check_always);
@@ -334,6 +371,7 @@ void mutex_init() {
   def(NMethodSweeperStats_lock     , PaddedMutex  , special,     true,  _safepoint_check_never);
   def(ThreadsSMRDelete_lock        , PaddedMonitor, special,     true,  _safepoint_check_never);
   def(ThreadIdTableCreate_lock     , PaddedMutex  , leaf,        false, _safepoint_check_always);
+  def(Wisp_lock                    , PaddedMonitor, special,     true,  _safepoint_check_never);
   def(SharedDecoder_lock           , PaddedMutex  , native,      true,  _safepoint_check_never);
   def(DCmdFactory_lock             , PaddedMutex  , leaf,        true,  _safepoint_check_never);
 #if INCLUDE_NMT
@@ -354,6 +392,9 @@ void mutex_init() {
 #if INCLUDE_JVMCI
   def(JVMCI_lock                   , PaddedMonitor, nonleaf+2,   true,  _safepoint_check_always);
 #endif
+  SystemDictionary_lock = UseWispMonitor ?
+    new SystemDictObjMonitor(SystemDictionary_monitor_lock):
+    new SystemDictMonitor(SystemDictionary_monitor_lock);
 }
 
 GCMutexLocker::GCMutexLocker(Mutex* mutex) {
@@ -365,6 +406,12 @@ GCMutexLocker::GCMutexLocker(Mutex* mutex) {
     _mutex->lock();
   }
 }
+
+SystemDictLocker::SystemDictLocker(JavaThread* THREAD, SystemDictMonitor* mutex, bool do_lock)
+  : SystemDictLockerBase(THREAD, mutex, do_lock) {}
+
+GCSystemDictLocker::GCSystemDictLocker(SystemDictMonitor* mutex)
+  : SystemDictLockerBase(Thread::current(), mutex, !SafepointSynchronize::is_at_safepoint()) {}
 
 // Print all mutexes/monitors that are currently owned by a thread; called
 // by fatal error handler.

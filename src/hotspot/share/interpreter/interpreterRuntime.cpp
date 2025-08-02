@@ -459,7 +459,12 @@ JRT_ENTRY(address, InterpreterRuntime::exception_handler_for_exception(JavaThrea
   StackWatermarkSet::after_unwind(current);
 
   LastFrameAccessor last_frame(current);
-  Handle             h_exception(current, exception);
+  // Wisp relys on threadDeath as a special uncatchable exception to shutdown
+  // all running coroutines. However, exceptions throw in finally block
+  // will overwrite current threadDeath exception, thus we need to replace
+  // all exception with threadDeath after coroutine shutdown.
+  Handle h_exception(current, WispThread::is_current_death_pending(current) ?
+                        (oopDesc*)Universe::wisp_thread_death_exception() : exception);
   methodHandle       h_method   (current, last_frame.method());
   constantPoolHandle h_constants(current, h_method->constants());
   bool               should_repeat;
@@ -590,6 +595,11 @@ JRT_ENTRY(void, InterpreterRuntime::throw_pending_exception(JavaThread* current)
   // nothing to do - eventually we should remove this code entirely (see comments @ call sites)
 JRT_END
 
+#ifdef ASSERT
+JRT_ENTRY(void, InterpreterRuntime::print_site(JavaThread* current, void* arg0, void* arg1))
+  assert(current->has_pending_exception(), "must only be called if there's an exception pending");
+JRT_END
+#endif
 
 JRT_ENTRY(void, InterpreterRuntime::throw_AbstractMethodError(JavaThread* current))
   THROW(vmSymbols::java_lang_AbstractMethodError());
@@ -722,6 +732,8 @@ void InterpreterRuntime::resolve_get_put(JavaThread* current, Bytecodes::Code by
 // be shared by method invocation and synchronized blocks.
 //%note synchronization_3
 
+address monitorenter_address_interp = (address)InterpreterRuntime::monitorenter;
+
 //%note monitor_1
 JRT_ENTRY_NO_ASYNC(void, InterpreterRuntime::monitorenter(JavaThread* current, BasicObjectLock* elem))
 #ifdef ASSERT
@@ -730,6 +742,13 @@ JRT_ENTRY_NO_ASYNC(void, InterpreterRuntime::monitorenter(JavaThread* current, B
   if (PrintBiasedLockingStatistics) {
     Atomic::inc(BiasedLocking::slow_path_entry_count_addr());
   }
+
+  // thread steal support
+  WispPostStealHandleUpdateMark w(current, (Thread *&)THREAD, __tiv, __hm);
+
+  // Coroutine work steal support
+  EnableStealMark p(THREAD);
+
   Handle h_obj(current, elem->obj());
   assert(Universe::heap()->is_in_or_null(h_obj()),
          "must be NULL or an object");
@@ -759,6 +778,34 @@ JRT_LEAF(void, InterpreterRuntime::monitorexit(BasicObjectLock* elem))
   elem->set_obj(NULL);
 JRT_END
 
+// monitorexit may call Java methods, so it must be a JRT_ENTRY
+// (not a JRT_LEAF, JRT_LEAF don't allow to call Java methods or break safepoint)
+JRT_ENTRY_NO_ASYNC(void, InterpreterRuntime::monitorexit_wisp(JavaThread* current, BasicObjectLock* elem))
+#ifdef ASSERT
+  current->last_frame().interpreter_frame_verify_monitor(elem);
+#endif
+  Handle h_obj(current, elem->obj());
+  assert(Universe::heap()->is_in(h_obj()), "must be an object");
+  // The object could become unlocked through a JNI call,
+  // which we have no other checks for.
+  // Give a fatal message if CheckJNICalls. Otherwise we ignore it.
+  if (h_obj()->is_unlocked()) {
+    if (CheckJNICalls) {
+      fatal("Object has been unlocked by JNI");
+    }
+    return;
+  }
+  // It's safer to use handle to do exit. obj maybe moved by GC.
+  // Maybe we use obj do something after exit in future code.
+  ObjectSynchronizer::exit(h_obj, elem->lock(), current);
+  // Free entry. This must be done here, since a pending exception might be installed on
+  // exit. If it is not cleared, the exception handling code will try to unlock the monitor again.
+  elem->set_obj(NULL);
+#ifdef ASSERT
+  current->last_frame().interpreter_frame_verify_monitor(elem);
+#endif
+JRT_END
+
 
 JRT_ENTRY(void, InterpreterRuntime::throw_illegal_monitor_state_exception(JavaThread* current))
   THROW(vmSymbols::java_lang_IllegalMonitorStateException());
@@ -772,15 +819,24 @@ JRT_ENTRY(void, InterpreterRuntime::new_illegal_monitor_state_exception(JavaThre
   // method will be called during an exception unwind.
 
   assert(!HAS_PENDING_EXCEPTION, "no pending exception");
-  Handle exception(current, current->vm_result());
+  // this path will also use vm_result, so we'd hook it again.
+  Handle exception(current, (EnableCoroutine && UseWispMonitor) ? current->vm_result_for_wisp() : current->vm_result());
   assert(exception() != NULL, "vm result should be set");
-  current->set_vm_result(NULL); // clear vm result before continuing (may cause memory leaks and assert failures)
+  if (EnableCoroutine && UseWispMonitor) {
+    current->set_vm_result_for_wisp(NULL);
+  } else {
+    current->set_vm_result(NULL); // clear vm result before continuing (may cause memory leaks and assert failures)
+  }
   if (!exception->is_a(vmClasses::ThreadDeath_klass())) {
     exception = get_preinitialized_exception(
                        vmClasses::IllegalMonitorStateException_klass(),
                        CATCH);
   }
-  current->set_vm_result(exception());
+  if (EnableCoroutine && UseWispMonitor) {
+    current->set_vm_result_for_wisp(exception());
+  } else {
+    current->set_vm_result(exception());
+  }
 JRT_END
 
 
@@ -1139,6 +1195,9 @@ JRT_ENTRY(void, InterpreterRuntime::at_safepoint(JavaThread* current))
     // then we may have JVMTI work to do.
     LastFrameAccessor last_frame(current);
     JvmtiExport::at_single_stepping_point(current, last_frame.method(), last_frame.bcp());
+  }
+  if (EnableCoroutine) {
+    Coroutine::after_safepoint(current);
   }
 JRT_END
 

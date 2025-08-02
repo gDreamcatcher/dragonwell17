@@ -67,6 +67,10 @@ import java.util.function.Supplier;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Stream;
 import jdk.internal.logger.LoggerFinderLoader.TemporaryLoggerFinder;
+
+import com.alibaba.rcm.internal.AbstractResourceContainer;
+import com.alibaba.wisp.engine.WispEngine;
+import com.alibaba.wisp.engine.WispTask;
 import jdk.internal.misc.Unsafe;
 import jdk.internal.util.StaticProperty;
 import jdk.internal.module.ModuleBootstrap;
@@ -2469,8 +2473,65 @@ public final class System {
                 Shutdown.exit(statusCode);
             }
 
+            @Override
             public String getLoaderNameID(ClassLoader loader) {
                 return loader != null ? loader.nameAndId() : "null";
+            }
+
+            @Override
+            public Thread currentThread0() {
+                return Thread.currentThread0();
+            }
+
+            @Override
+            public void yield0() {
+                Thread.yield0();
+            }
+
+            @Override
+            public void setWispTask(Thread thread, WispTask task) {
+                thread.wispTask = task;
+            }
+
+            @Override
+            public WispTask getWispTask(Thread thread) {
+                return thread.wispTask;
+            }
+
+            @Override
+            public void setWispAlive(Thread thread, boolean b) {
+                thread.wispIsAlive = b;
+            }
+
+            @Override
+            public boolean isInSameNative(Thread thread) {
+                return thread.isInSameNative();
+            }
+
+            @Override
+            public void threadExit(Thread thread) {
+                thread.exit();
+            }
+
+            @Override
+            public void wispBooted() {
+                Thread.wispBooted();
+            }
+
+
+            @Override
+            public void setResourceContainer(Thread thread, AbstractResourceContainer container) {
+                thread.resourceContainer = container;
+            }
+
+            @Override
+            public AbstractResourceContainer getResourceContainer(Thread thread) {
+                return thread.resourceContainer;
+            }
+
+            @Override
+            public AbstractResourceContainer getInheritedResourceContainer(Thread thread) {
+                return thread.inheritedResourceContainer;
             }
         });
     }

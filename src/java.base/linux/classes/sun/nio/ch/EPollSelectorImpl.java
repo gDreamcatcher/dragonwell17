@@ -25,6 +25,10 @@
 
 package sun.nio.ch;
 
+import com.alibaba.wisp.engine.WispEngine;
+import jdk.internal.access.SharedSecrets;
+import jdk.internal.access.WispEngineAccess;
+
 import java.io.IOException;
 import java.nio.channels.ClosedSelectorException;
 import java.nio.channels.SelectionKey;
@@ -35,6 +39,7 @@ import java.util.Deque;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
 import static sun.nio.ch.EPoll.EPOLLIN;
@@ -48,6 +53,8 @@ import static sun.nio.ch.EPoll.EPOLL_CTL_MOD;
  */
 
 class EPollSelectorImpl extends SelectorImpl {
+
+    private static final WispEngineAccess WEA = SharedSecrets.getWispEngineAccess();
 
     // maximum number of events to poll in one call to epoll_wait
     private static final int NUM_EPOLLEVENTS = Math.min(IOUtil.fdLimit(), 1024);
@@ -115,7 +122,9 @@ class EPollSelectorImpl extends SelectorImpl {
 
             do {
                 long startTime = timedPoll ? System.nanoTime() : 0;
-                numEntries = EPoll.wait(epfd, pollArrayAddress, NUM_EPOLLEVENTS, to);
+                numEntries = WispEngine.transparentWispSwitch() ?
+                        handleEPollWithWisp(to) :
+                        EPoll.wait(epfd, pollArrayAddress, NUM_EPOLLEVENTS, to);
                 if (numEntries == IOStatus.INTERRUPTED && timedPoll) {
                     // timed poll interrupted so need to adjust timeout
                     long adjust = System.nanoTime() - startTime;
@@ -133,6 +142,16 @@ class EPollSelectorImpl extends SelectorImpl {
         }
         processDeregisterQueue();
         return processEvents(numEntries, action);
+    }
+
+    private final static Object INTERRUPTED = new Object();
+    private AtomicReference<Object> status = new AtomicReference<>();
+    // null: initial status
+    // INTERRUPTED: interrupted by wakeup()
+    // other: task blocking on this selector
+
+    private int handleEPollWithWisp(long timeout) throws IOException {
+        return WEA.epollWait(epfd, pollArrayAddress, NUM_EPOLLEVENTS, timeout, status, INTERRUPTED);
     }
 
     /**
@@ -197,7 +216,7 @@ class EPollSelectorImpl extends SelectorImpl {
             }
         }
 
-        if (interrupted) {
+        if (interrupted || WispEngine.transparentWispSwitch() && WEA.useDirectSelectorWakeup() && status.get() == INTERRUPTED) {
             clearInterrupt();
         }
 
@@ -247,10 +266,14 @@ class EPollSelectorImpl extends SelectorImpl {
     public Selector wakeup() {
         synchronized (interruptLock) {
             if (!interruptTriggered) {
-                try {
-                    eventfd.set();
-                } catch (IOException ioe) {
-                    throw new InternalError(ioe);
+                if (WispEngine.transparentWispSwitch() && WEA.useDirectSelectorWakeup()) {
+                    WEA.interruptEpoll(status, INTERRUPTED, eventfd.efd());
+                } else {
+                    try {
+                        eventfd.set();
+                    } catch (IOException ioe) {
+                        throw new InternalError(ioe);
+                    }
                 }
                 interruptTriggered = true;
             }
@@ -260,7 +283,15 @@ class EPollSelectorImpl extends SelectorImpl {
 
     private void clearInterrupt() throws IOException {
         synchronized (interruptLock) {
-            eventfd.reset();
+            if (WispEngine.transparentWispSwitch() && WEA.useDirectSelectorWakeup()) {
+                assert status.get() == INTERRUPTED;
+                status.lazySet(null);
+                if (!WEA.isAllThreadAsWisp()) {
+                    eventfd.reset();
+                }
+            } else {
+                eventfd.reset();
+            }
             interruptTriggered = false;
         }
     }

@@ -257,6 +257,12 @@ JVM_StartThread(JNIEnv *env, jobject thread);
 JNIEXPORT void JNICALL
 JVM_StopThread(JNIEnv *env, jobject thread, jobject exception);
 
+JNIEXPORT jboolean JNICALL
+JVM_CheckAndClearNativeInterruptForWisp(JNIEnv* env, jobject task, jobject thread);
+
+JNIEXPORT jboolean JNICALL
+JVM_IsThreadAlive(JNIEnv *env, jobject thread);
+
 JNIEXPORT void JNICALL
 JVM_SuspendThread(JNIEnv *env, jobject thread);
 
@@ -289,6 +295,9 @@ JVM_GetAllThreads(JNIEnv *env, jclass dummy);
 
 JNIEXPORT void JNICALL
 JVM_SetNativeThreadName(JNIEnv *env, jobject jthread, jstring name);
+
+JNIEXPORT jboolean JNICALL
+JVM_IsInSameNative(JNIEnv *env, jobject jthread);
 
 /* getStackTrace() and getAllStackTraces() method */
 JNIEXPORT jobjectArray JNICALL
@@ -1040,6 +1049,17 @@ JVM_ReleaseUTF(const char *utf);
 JNIEXPORT jboolean JNICALL
 JVM_IsSameClassPackage(JNIEnv *env, jclass class1, jclass class2);
 
+JNIEXPORT void JNICALL
+JVM_SetWispTask(JNIEnv* env, jclass clz, jlong coroutinePtr, jint task_id, jobject task, jobject engine);
+
+JNIEXPORT void JNICALL
+JVM_UpdateThreadObjectForWispThread(JNIEnv* env, jclass clz, jlong coroutinePtr, jobject threadObject);
+
+JNIEXPORT jint JNICALL
+JVM_GetProxyUnpark(JNIEnv* env, jclass clz, jintArray res);
+
+JNIEXPORT void JNICALL
+JVM_MarkPreempted(JNIEnv* env, jclass clz, jobject thread);
 
 /*************************************************************************
  PART 3: I/O and Network Support
