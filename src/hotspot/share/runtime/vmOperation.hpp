@@ -111,6 +111,7 @@
   template(PrintMetadata)                         \
   template(GTestExecuteAtSafepoint)               \
   template(JFROldObject)                          \
+  template(ElasticMaxHeap)                        \
   template(JvmtiPostObjectFree)
 
 class Thread;

@@ -1148,7 +1148,8 @@ void G1CollectedHeap::resize_heap_if_necessary() {
   assert_at_safepoint_on_vm_thread();
 
   bool should_expand;
-  size_t resize_amount = _heap_sizing_policy->full_collection_resize_amount(should_expand);
+  bool should_elastic;
+  size_t resize_amount = _heap_sizing_policy->full_collection_resize_amount(should_expand, should_elastic);
 
   if (resize_amount == 0) {
     return;
@@ -1156,6 +1157,15 @@ void G1CollectedHeap::resize_heap_if_necessary() {
     expand(resize_amount, _workers);
   } else {
     shrink(resize_amount);
+  }
+
+  size_t exp_size = exp_EMH_size();
+  if (ElasticMaxHeap && exp_size > 0 && exp_size < capacity() && should_elastic) {
+    // shrink to exp_EMH_size when
+    // 1. exp_EMH_size smaller than capacity
+    // 2. exp_EMH_size bigger than minimum_desired_capacity
+    size_t shrink_bytes = capacity() - exp_size;
+    shrink(shrink_bytes);
   }
 }
 
@@ -2345,7 +2355,14 @@ size_t G1CollectedHeap::unsafe_max_tlab_alloc(Thread* ignored) const {
 }
 
 size_t G1CollectedHeap::max_capacity() const {
-  return max_regions() * HeapRegion::GrainBytes;
+  size_t capacity = max_regions() * HeapRegion::GrainBytes;
+  // Elastic Max Heap
+  if (ElasticMaxHeap) {
+    size_t cur_size = current_max_heap_size();
+    guarantee(cur_size <= capacity, "must be");
+    return cur_size;
+  }
+  return capacity;
 }
 
 void G1CollectedHeap::prepare_for_verify() {
@@ -2414,6 +2431,11 @@ void G1CollectedHeap::print_on(outputStream* st) const {
             p2i(_hrm.reserved().start()),
             p2i(_hrm.reserved().end()));
   st->cr();
+  if (ElasticMaxHeap) {
+    st->print(" %-27s", "current elastic heap size");
+    st->print(" " SIZE_FORMAT "M", current_max_heap_size() / M);
+    st->cr();
+  }
   st->print("  region size " SIZE_FORMAT "K, ", HeapRegion::GrainBytes / K);
   uint young_regions = young_regions_count();
   st->print("%u young (" SIZE_FORMAT "K), ", young_regions,
@@ -4079,7 +4101,7 @@ public:
   }
 };
 
-void G1CollectedHeap::rebuild_region_sets(bool free_list_only) {
+void G1CollectedHeap::rebuild_region_sets(bool free_list_only, bool is_elastic_max_heap_shrink) {
   assert_at_safepoint_on_vm_thread();
 
   if (!free_list_only) {
@@ -4098,7 +4120,11 @@ void G1CollectedHeap::rebuild_region_sets(bool free_list_only) {
       _archive_allocator->clear_used();
     }
   }
-  assert_used_and_recalculate_used_equal(this);
+
+  // don't do this assert if is_elastic_max_heap_shrink
+  if (!is_elastic_max_heap_shrink) {
+    assert_used_and_recalculate_used_equal(this);
+  }
 }
 
 // Methods for the mutator alloc region

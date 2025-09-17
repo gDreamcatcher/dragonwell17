@@ -146,6 +146,8 @@ class os: AllStatic {
   static bool   pd_uncommit_memory(char* addr, size_t bytes, bool executable);
   static bool   pd_release_memory(char* addr, size_t bytes);
 
+  static bool   pd_free_heap_physical_memory(char *addr, size_t bytes);
+
   static char*  pd_attempt_map_memory_to_file_at(char* addr, size_t bytes, int file_desc);
 
   static char*  pd_map_memory(int fd, const char* file_name, size_t file_offset,
@@ -366,6 +368,8 @@ class os: AllStatic {
                                       bool executable, const char* mesg);
   static bool   uncommit_memory(char* addr, size_t bytes, bool executable = false);
   static bool   release_memory(char* addr, size_t bytes);
+
+  static bool   free_heap_physical_memory(char *addr, size_t bytes);
 
   // Does the platform support trimming the native heap?
   static bool can_trim_native_heap();

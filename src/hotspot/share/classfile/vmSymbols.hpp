@@ -748,6 +748,10 @@
                                                                                                                   \
   /* forEachRemaining support */                                                                                  \
   template(java_util_stream_StreamsRangeIntSpliterator,          "java/util/stream/Streams$RangeIntSpliterator")  \
+  /* ElasticMaxDirectMemory */                                                                                    \
+  template(java_nio_Bits,                          "java/nio/Bits")                                               \
+  template(updateMaxMemory_name,                   "updateMaxMemory")                                             \
+  template(updateMaxMemory_signature,              "(J)Ljava/lang/String;")                                       \
                                                                                                                   \
   /* jfr signatures */                                                                                            \
   JFR_TEMPLATES(template)                                                                                         \

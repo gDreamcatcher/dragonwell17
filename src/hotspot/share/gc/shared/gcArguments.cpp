@@ -26,6 +26,7 @@
 #include "precompiled.hpp"
 #include "gc/shared/cardTableRS.hpp"
 #include "gc/shared/gcArguments.hpp"
+#include "gc/shared/elasticMaxHeap.hpp"
 #include "logging/log.hpp"
 #include "runtime/arguments.hpp"
 #include "runtime/globals.hpp"
@@ -36,6 +37,7 @@ size_t HeapAlignment = 0;
 size_t SpaceAlignment = 0;
 
 void GCArguments::initialize() {
+  ElasticMaxHeapChecker::check_common_opitons();
   if (FullGCALot && FLAG_IS_DEFAULT(MarkSweepAlwaysCompactCount)) {
     MarkSweepAlwaysCompactCount = 1;  // Move objects every gc.
   }

@@ -342,6 +342,13 @@ MemoryUsage G1MonitoringSupport::old_gen_memory_usage(size_t initial_size, size_
                      max_size);
 }
 
+size_t G1MonitoringSupport::old_gen_max() {
+  if (ElasticMaxHeap) {
+    return _g1h->current_max_heap_size();
+  }
+  return 0;
+}
+
 G1MonitoringScope::G1MonitoringScope(G1MonitoringSupport* g1mm, bool full_gc, bool all_memory_pools_affected) :
   _tcs(full_gc ? g1mm->_full_collection_counters : g1mm->_incremental_collection_counters),
   _tms(full_gc ? &g1mm->_full_gc_memory_manager : &g1mm->_incremental_memory_manager,

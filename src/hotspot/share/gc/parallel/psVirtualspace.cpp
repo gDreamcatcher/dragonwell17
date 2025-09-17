@@ -32,6 +32,7 @@
 PSVirtualSpace::PSVirtualSpace(ReservedSpace rs, size_t alignment) :
   _alignment(alignment)
 {
+  _EMH_size = 0;
   set_reserved(rs);
   set_committed(reserved_low_addr(), reserved_low_addr());
   DEBUG_ONLY(verify());
@@ -40,6 +41,7 @@ PSVirtualSpace::PSVirtualSpace(ReservedSpace rs, size_t alignment) :
 PSVirtualSpace::PSVirtualSpace(ReservedSpace rs) :
   _alignment(os::vm_page_size())
 {
+  _EMH_size = 0;
   set_reserved(rs);
   set_committed(reserved_low_addr(), reserved_low_addr());
   DEBUG_ONLY(verify());
@@ -53,6 +55,7 @@ PSVirtualSpace::PSVirtualSpace():
   _committed_low_addr(NULL),
   _committed_high_addr(NULL),
   _special(false) {
+    _EMH_size = 0;
 }
 
 // Deprecated.

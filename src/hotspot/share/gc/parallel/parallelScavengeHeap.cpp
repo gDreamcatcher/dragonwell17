@@ -203,6 +203,12 @@ bool ParallelScavengeHeap::is_maximal_no_gc() const {
 
 size_t ParallelScavengeHeap::max_capacity() const {
   size_t estimated = reserved_region().byte_size();
+  // Elastic Max Heap
+  if (ElasticMaxHeap) {
+    // young_gen()->max_size() is also controlled by ElasticMaxHeap
+    guarantee(current_max_heap_size() <= estimated, "must be");
+    estimated = current_max_heap_size();
+  }
   if (UseAdaptiveSizePolicy) {
     estimated -= _size_policy->max_survivor_size(young_gen()->max_gen_size());
   } else {
@@ -658,6 +664,11 @@ bool ParallelScavengeHeap::print_location(outputStream* st, void* addr) const {
 }
 
 void ParallelScavengeHeap::print_on(outputStream* st) const {
+  if (ElasticMaxHeap) {
+    st->print(" %-27s", "current elastic heap size");
+    st->print(" " SIZE_FORMAT "M", current_max_heap_size() / M);
+    st->cr();
+  }
   if (young_gen() != NULL) {
     young_gen()->print_on(st);
   }

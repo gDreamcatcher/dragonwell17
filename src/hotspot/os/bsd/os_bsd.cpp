@@ -1768,6 +1768,11 @@ bool os::pd_release_memory(char* addr, size_t size) {
   return anon_munmap(addr, size);
 }
 
+// to be implemented
+bool os::pd_free_heap_physical_memory(char *addr, size_t bytes) {
+  return false;
+}
+
 static bool bsd_mprotect(char* addr, size_t size, int prot) {
   // Bsd wants the mprotect address argument to be page aligned.
   char* bottom = (char*)align_down((intptr_t)addr, os::Bsd::page_size());

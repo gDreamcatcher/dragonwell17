@@ -40,7 +40,8 @@
 PSOldGen::PSOldGen(ReservedSpace rs, size_t initial_size, size_t min_size,
                    size_t max_size, const char* perf_data_name, int level):
   _min_gen_size(min_size),
-  _max_gen_size(max_size)
+  _max_gen_size(max_size),
+  _cur_max_gen_size(max_size)
 {
   initialize(rs, initial_size, GenAlignment, perf_data_name, level);
 }
@@ -314,7 +315,7 @@ void PSOldGen::resize(size_t desired_free_space) {
   // Adjust according to our min and max
   new_size = clamp(new_size, min_gen_size(), max_gen_size());
 
-  assert(max_gen_size() >= reserved().byte_size(), "max new size problem?");
+  assert(ElasticMaxHeap || max_gen_size() >= reserved().byte_size(), "max new size problem?");
   new_size = align_up(new_size, alignment);
 
   const size_t current_size = capacity_in_bytes();

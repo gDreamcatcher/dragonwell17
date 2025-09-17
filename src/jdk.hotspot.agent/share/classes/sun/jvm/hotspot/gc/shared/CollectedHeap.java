@@ -38,7 +38,8 @@ import sun.jvm.hotspot.utilities.Observable;
 import sun.jvm.hotspot.utilities.Observer;
 
 public abstract class CollectedHeap extends VMObject {
-  private static long         reservedFieldOffset;
+  private static long          reservedFieldOffset;
+  private static CIntegerField currentMaxHeapSizeField;
 
   static {
     VM.registerVMInitializedObserver(new Observer() {
@@ -52,6 +53,7 @@ public abstract class CollectedHeap extends VMObject {
     Type type = db.lookupType("CollectedHeap");
 
     reservedFieldOffset = type.getField("_reserved").getOffset();
+    currentMaxHeapSizeField = type.getCIntegerField("_current_max_heap_size");
   }
 
   public CollectedHeap(Address addr) {
@@ -65,6 +67,9 @@ public abstract class CollectedHeap extends VMObject {
 
   public abstract long capacity();
   public abstract long used();
+  public long currentMaxHeapSize() {
+    return currentMaxHeapSizeField.getValue(addr);
+  }
 
   public MemRegion reservedRegion() {
     return new MemRegion(addr.addOffsetTo(reservedFieldOffset));

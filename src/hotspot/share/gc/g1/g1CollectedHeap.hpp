@@ -54,6 +54,7 @@
 #include "gc/shared/preservedMarks.hpp"
 #include "gc/shared/softRefPolicy.hpp"
 #include "gc/shared/taskqueue.hpp"
+#include "gc/shared/elasticMaxHeap.hpp"
 #include "memory/memRegion.hpp"
 #include "utilities/stack.hpp"
 
@@ -148,6 +149,9 @@ class G1CollectedHeap : public CollectedHeap {
   friend class G1EvacuateRegionsTask;
   friend class G1PLABAllocator;
 
+  // Elastic Max Heap
+  friend class G1_ElasticMaxHeapOp;
+
   // Other related classes.
   friend class G1HeapPrinterMark;
   friend class HeapRegionClaimer;
@@ -188,7 +192,7 @@ private:
   // reflect the contents of the heap. The only exception is the
   // humongous set which was not torn down in the first place. If
   // free_list_only is true, it will only rebuild the free list.
-  void rebuild_region_sets(bool free_list_only);
+  void rebuild_region_sets(bool free_list_only, bool is_elastic_max_heap_shrink = false);
 
   // Callback for region mapping changed events.
   G1RegionMappingChangedListener _listener;
@@ -1091,6 +1095,10 @@ public:
     return is_maximal_no_gc() && num_free_regions() == 0;
   }
 
+  HeapRegionManager* hrm() {
+    return &_hrm;
+  }
+
   // The current number of regions in the heap.
   uint num_regions() const { return _hrm.length(); }
 
@@ -1479,6 +1487,25 @@ public:
 
   // Used to print information about locations in the hs_err file.
   virtual bool print_location(outputStream* st, void* addr) const;
+
+private:
+  // Elastic Max Heap
+  // expected ElasticMaxHeap size during full gc (temp value)
+  // 0 means do not adjust
+  // min_gen_size <= _expected_EMH_size  <= _reserved size.
+  // will be cleared after ElasticMaxHeap VM operation.
+  size_t _exp_EMH_size;
+public:
+  size_t exp_EMH_size() const { return _exp_EMH_size; }
+  void set_exp_EMH_size(size_t size) {
+    guarantee(size <= _reserved.byte_size(), "must be");
+    _exp_EMH_size = size;
+  }
+  void update_gen_max_counter(size_t size) {
+    guarantee(ElasticMaxHeap, "must be");
+    _g1mm->young_gen_counters()->update_max_size(size);
+    _g1mm->old_gen_counters()->update_max_size(size);
+  }
 };
 
 // Scoped object that performs common pre- and post-gc heap printing operations.

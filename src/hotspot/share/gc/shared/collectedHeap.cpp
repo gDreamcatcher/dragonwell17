@@ -244,6 +244,7 @@ CollectedHeap::CollectedHeap() :
   const size_t elements_per_word = HeapWordSize / sizeof(jint);
   _filler_array_max_size = align_object_size(filler_array_hdr_size() +
                                              max_len / elements_per_word);
+  _current_max_heap_size = MaxHeapSize;
 
   NOT_PRODUCT(_promotion_failure_alot_count = 0;)
   NOT_PRODUCT(_promotion_failure_alot_gc_number = 0;)

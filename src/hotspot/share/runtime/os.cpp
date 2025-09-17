@@ -1803,6 +1803,10 @@ bool os::release_memory(char* addr, size_t bytes) {
   return res;
 }
 
+bool os::free_heap_physical_memory(char *addr, size_t bytes) {
+  return pd_free_heap_physical_memory(addr, bytes);
+}
+
 // Prints all mappings
 void os::print_memory_mappings(outputStream* st) {
   os::print_memory_mappings(nullptr, (size_t)-1, st);

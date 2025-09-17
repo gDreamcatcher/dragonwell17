@@ -43,6 +43,7 @@ PSYoungGen::PSYoungGen(ReservedSpace rs, size_t initial_size, size_t min_size, s
   _to_space(NULL),
   _min_gen_size(min_size),
   _max_gen_size(max_size),
+  _cur_max_gen_size(max_size),
   _gen_counters(NULL),
   _eden_counters(NULL),
   _from_counters(NULL),

@@ -24,6 +24,7 @@
 
 #include "precompiled.hpp"
 #include "gc/g1/g1PageBasedVirtualSpace.hpp"
+#include "gc/g1/g1CollectedHeap.hpp"
 #include "gc/shared/pretouchTask.hpp"
 #include "gc/shared/workgroup.hpp"
 #include "oops/markWord.hpp"
@@ -213,7 +214,11 @@ void G1PageBasedVirtualSpace::uncommit_internal(size_t start_page, size_t end_pa
             "Given start page " SIZE_FORMAT " is larger or equal to end page " SIZE_FORMAT, start_page, end_page);
 
   char* start_addr = page_start(start_page);
-  os::uncommit_memory(start_addr, pointer_delta(bounded_end_addr(end_page), start_addr, sizeof(char)));
+  bool res = os::uncommit_memory(start_addr, pointer_delta(bounded_end_addr(end_page), start_addr, sizeof(char)));
+  if (res && ElasticMaxHeap && (((G1CollectedHeap*)Universe::heap())->exp_EMH_size() > 0)) {
+    bool result = os::free_heap_physical_memory(start_addr, pointer_delta(bounded_end_addr(end_page), start_addr, sizeof(char)));
+    guarantee(result, "free heap physical memory should be successful");
+  }
 }
 
 void G1PageBasedVirtualSpace::uncommit(size_t start_page, size_t size_in_pages) {

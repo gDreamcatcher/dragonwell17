@@ -227,6 +227,14 @@ public:
 
   size_t old_gen_committed()          { return _old_gen_committed; }
   size_t old_gen_used()               { return _old_gen_used; }
+  size_t old_gen_max();
+
+  GenerationCounters* young_gen_counters() {
+    return _young_gen_counters;
+  }
+  GenerationCounters* old_gen_counters() {
+    return _old_gen_counters;
+  }
 
   // Monitoring support for MemoryPools. Values in the returned MemoryUsage are
   // guaranteed to be consistent with each other.

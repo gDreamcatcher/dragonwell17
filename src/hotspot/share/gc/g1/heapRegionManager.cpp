@@ -66,6 +66,7 @@ HeapRegionManager::HeapRegionManager() :
   _card_counts_mapper(NULL),
   _committed_map(),
   _allocated_heapregions_length(0),
+  _EMH_length(0),
   _regions(), _heap_mapper(NULL),
   _prev_bitmap_mapper(NULL),
   _next_bitmap_mapper(NULL),
@@ -91,6 +92,8 @@ void HeapRegionManager::initialize(G1RegionToSpaceMapper* heap_storage,
   _card_counts_mapper = card_counts;
 
   _regions.initialize(heap_storage->reserved(), HeapRegion::GrainBytes);
+
+  _EMH_length = (uint)_regions.length();
 
   _committed_map.initialize(reserved_length());
 }
@@ -371,6 +374,12 @@ uint HeapRegionManager::expand_any(uint num_regions, WorkGang* pretouch_workers)
 uint HeapRegionManager::expand_by(uint num_regions, WorkGang* pretouch_workers) {
   assert(num_regions > 0, "Must expand at least 1 region");
 
+  if (ElasticMaxHeap) {
+    guarantee(EMH_length() >= length(), "must be");
+    uint avaiable_regions = EMH_length() - length();
+    num_regions = MIN2(num_regions, avaiable_regions);
+  }
+
   // First "undo" any requests to uncommit memory concurrently by
   // reverting such regions to being available.
   uint expanded = expand_inactive(num_regions);
@@ -386,6 +395,13 @@ uint HeapRegionManager::expand_by(uint num_regions, WorkGang* pretouch_workers) 
 
 void HeapRegionManager::expand_exact(uint start, uint num_regions, WorkGang* pretouch_workers) {
   assert(num_regions != 0, "Need to request at least one region");
+
+  if (ElasticMaxHeap) {
+    guarantee(EMH_length() >= length(), "must be");
+    uint avaiable_regions = EMH_length() - length();
+    num_regions = MIN2(num_regions, avaiable_regions);
+  }
+
   uint end = start + num_regions;
 
   for (uint i = start; i < end; i++) {
@@ -413,6 +429,13 @@ void HeapRegionManager::expand_exact(uint start, uint num_regions, WorkGang* pre
 }
 
 uint HeapRegionManager::expand_on_preferred_node(uint preferred_index) {
+  if (ElasticMaxHeap) {
+    guarantee(EMH_length() >= length(), "The current legth %u must not exceed dynamic max heap length %u", length(), EMH_length());
+    // No regions left, expand failed.
+    if (EMH_length() == length()) {
+      return 0;
+    }
+  }
   uint expand_candidate = UINT_MAX;
 
   if (available() >= 1) {

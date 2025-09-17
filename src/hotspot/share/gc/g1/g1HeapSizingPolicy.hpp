@@ -58,7 +58,7 @@ public:
 
   // Returns the amount of bytes to resize the heap; if expand is set, the heap
   // should by expanded by that amount, shrunk otherwise.
-  size_t full_collection_resize_amount(bool& expand);
+  size_t full_collection_resize_amount(bool& expand, bool& elastic);
   // Clear ratio tracking data used by expansion_amount().
   void clear_ratio_check_data();
 

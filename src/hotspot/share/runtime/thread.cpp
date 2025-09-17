@@ -47,6 +47,8 @@
 #include "gc/shared/oopStorageSet.hpp"
 #include "gc/shared/stringdedup/stringDedup.hpp"
 #include "gc/shared/tlab_globals.hpp"
+// ElasticMaxHeap
+#include "gc/shared/elasticMaxHeap.hpp"
 #include "interpreter/interpreter.hpp"
 #include "interpreter/linkResolver.hpp"
 #include "interpreter/oopMapCache.hpp"
@@ -122,6 +124,7 @@
 #include "runtime/vmThread.hpp"
 #include "runtime/vmOperations.hpp"
 #include "runtime/vm_version.hpp"
+#include "runtime/globals_extension.hpp"
 #include "services/attachListener.hpp"
 #include "services/management.hpp"
 #include "services/memTracker.hpp"
@@ -3322,6 +3325,23 @@ jint Threads::create_vm(JavaVMInitArgs* args, bool* canTryAgain) {
 #ifdef ASSERT
   _vm_complete = true;
 #endif
+
+  // ElasticMaxHeap
+  if (ElasticMaxHeap && FLAG_IS_CMDLINE(ElasticMaxHeapSize)) {
+    // MaxHeapSize has been replaced with ElasticMaxHeapSize,
+    // need to shrink to initial MaxHeapSize
+    size_t initial_max_heap_size = ElasticMaxHeapConfig::initial_max_heap_size();
+    guarantee((size_t)MaxHeapSize > initial_max_heap_size, "should be");
+    bool success = Universe::heap()->update_elastic_max_heap(initial_max_heap_size,
+                                                             tty,
+                                                             true /* init_shrink */);
+    if (!success) {
+      jio_fprintf(defaultStream::error_stream(),
+                  "VM failed to initialize heap, \n"
+                  "try to use a larger Xmx\n");
+      vm_exit(1);
+    }
+  }
 
   if (DumpSharedSpaces) {
     MetaspaceShared::preload_and_dump();

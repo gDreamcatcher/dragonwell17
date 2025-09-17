@@ -70,5 +70,6 @@ G1OldGenPool::G1OldGenPool(G1CollectedHeap* g1h, size_t initial_size, size_t max
                     true /* support_usage_threshold */) { }
 
 MemoryUsage G1OldGenPool::get_memory_usage() {
-  return _g1mm->old_gen_memory_usage(initial_size(), max_size());
+  size_t max_sz = _g1mm->old_gen_max();
+  return _g1mm->old_gen_memory_usage(initial_size(), max_sz == 0 ? max_size() : max_sz);
 }

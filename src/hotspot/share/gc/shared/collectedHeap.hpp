@@ -107,6 +107,7 @@ class CollectedHeap : public CHeapObj<mtGC> {
  protected:
   // Not used by all GCs
   MemRegion _reserved;
+  size_t _current_max_heap_size;
 
   bool _is_gc_active;
 
@@ -509,6 +510,15 @@ class CollectedHeap : public CHeapObj<mtGC> {
   void reset_promotion_should_fail(volatile size_t* count);
   void reset_promotion_should_fail();
 #endif  // #ifndef PRODUCT
+public:
+  // Elastic Max Heap
+  // 1. change elastic max heap size
+  // 2. return true if resize success or not
+  bool update_elastic_max_heap(size_t new_size, outputStream* st, bool init_shrink = false);
+  size_t current_max_heap_size() const { return _current_max_heap_size; }
+  void set_current_max_heap_size(size_t new_size) {
+    _current_max_heap_size = new_size;
+  }
 };
 
 // Class to set and reset the GC cause for a CollectedHeap.

@@ -2059,6 +2059,11 @@ bool os::pd_release_memory(char* addr, size_t size) {
   return rc;
 }
 
+// to be implemented
+bool os::pd_free_heap_physical_memory(char *addr, size_t bytes) {
+  return false;
+}
+
 static bool checked_mprotect(char* addr, size_t size, int prot) {
 
   // Little problem here: if SPEC1170 behaviour is off, mprotect() on AIX will

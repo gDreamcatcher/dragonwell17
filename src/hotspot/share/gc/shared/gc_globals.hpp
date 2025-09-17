@@ -687,6 +687,20 @@
           "space parameters)")                                              \
           range(1, max_juint)                                               \
                                                                             \
+  product(uintx, ElasticMaxHeapShrinkMinFreeRatio, 40,                      \
+          "minimal ratio of free bytes after elastic max heap shirnk")      \
+                                                                            \
+  product(bool, ElasticMaxHeap, false,                                      \
+          "Allow change max heap size during runtime with jcmd")            \
+                                                                            \
+  product(bool, TraceElasticMaxHeap, false,                                 \
+          "Trace Elastic Max Heap adjustion logs and failure reasons")      \
+                                                                            \
+  product(bool, ElasticMaxDirectMemory, false,                              \
+          "Allow change max direct memory size during runtime with jcmd")   \
+                                                                            \
+  product(uintx, ElasticMaxHeapSize, ScaleForWordSize(96*M),                \
+          "Elastic maximum heap size (in bytes)")                           \
   develop(uintx, GCExpandToAllocateDelayMillis, 0,                          \
           "Delay between expansion and allocation (in milliseconds)")       \
                                                                             \

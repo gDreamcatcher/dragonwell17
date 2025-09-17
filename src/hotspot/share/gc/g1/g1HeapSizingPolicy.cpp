@@ -196,7 +196,7 @@ size_t G1HeapSizingPolicy::young_collection_expansion_amount() {
   return expand_bytes;
 }
 
-static size_t target_heap_capacity(size_t used_bytes, uintx free_ratio) {
+static size_t target_heap_capacity(size_t used_bytes, uintx free_ratio, size_t max_heap_size) {
   const double desired_free_percentage = (double) free_ratio / 100.0;
   const double desired_used_percentage = 1.0 - desired_free_percentage;
 
@@ -206,20 +206,27 @@ static size_t target_heap_capacity(size_t used_bytes, uintx free_ratio) {
   double desired_capacity_d = used_bytes_d / desired_used_percentage;
   // Let's make sure that they are both under the max heap size, which
   // by default will make it fit into a size_t.
-  double desired_capacity_upper_bound = (double) MaxHeapSize;
+  double desired_capacity_upper_bound = (double) max_heap_size;
   desired_capacity_d = MIN2(desired_capacity_d, desired_capacity_upper_bound);
   // We can now safely turn it into size_t's.
   return (size_t) desired_capacity_d;
 }
 
-size_t G1HeapSizingPolicy::full_collection_resize_amount(bool& expand) {
+size_t G1HeapSizingPolicy::full_collection_resize_amount(bool& expand, bool& elastic) {
   // Capacity, free and used after the GC counted as full regions to
   // include the waste in the following calculations.
   const size_t capacity_after_gc = _g1h->capacity();
   const size_t used_after_gc = capacity_after_gc - _g1h->unused_committed_regions_in_bytes();
 
-  size_t minimum_desired_capacity = target_heap_capacity(used_after_gc, MinHeapFreeRatio);
-  size_t maximum_desired_capacity = target_heap_capacity(used_after_gc, MaxHeapFreeRatio);
+  const size_t min_heap_size = MinHeapSize;
+  size_t max_heap_size = MaxHeapSize;
+  if (ElasticMaxHeap) {
+    max_heap_size = _g1h->current_max_heap_size();
+    guarantee(max_heap_size >= min_heap_size, "must be");
+  }
+
+  size_t minimum_desired_capacity = target_heap_capacity(used_after_gc, MinHeapFreeRatio, max_heap_size);
+  size_t maximum_desired_capacity = target_heap_capacity(used_after_gc, MaxHeapFreeRatio, max_heap_size);
 
   // This assert only makes sense here, before we adjust them
   // with respect to the min and max heap size.
@@ -236,6 +243,8 @@ size_t G1HeapSizingPolicy::full_collection_resize_amount(bool& expand) {
   // with respect to the heap max size as it's an upper bound (i.e.,
   // we'll try to make the capacity smaller than it, not greater).
   maximum_desired_capacity =  MAX2(maximum_desired_capacity, MinHeapSize);
+
+  elastic = _g1h->exp_EMH_size() >= minimum_desired_capacity;
 
   // Don't expand unless it's significant; prefer expansion to shrinking.
   if (capacity_after_gc < minimum_desired_capacity) {
