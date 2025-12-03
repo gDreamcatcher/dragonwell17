@@ -719,8 +719,7 @@ public abstract class AbstractQueuedSynchronizer
                 spins = postSpins = (byte)((postSpins << 1) | 1);
                 if (!timed)
                     LockSupport.park(this);
-                else if ((nanos = time - System.nanoTime()) > 0L ||
-                        WispEngine.transparentWispSwitch() && WEA.hasMoreTasks())
+                else if ((nanos = time - System.nanoTime()) > 0L)
                     LockSupport.parkNanos(this, nanos);
                 else
                     break;
