@@ -56,10 +56,10 @@ public class ShrinkGCTest extends TestBase {
         String[] contains6 = {
             "G1_ElasticMaxHeapOp heap after Young GC",
             "G1_ElasticMaxHeapOp heap after Full GC",
-            "GC.elastic_max_heap (4194304K->51200K)(4194304K)",
+            "GC.elastic_max_heap (4194304K->153600K)(4194304K)",
             "GC.elastic_max_heap success"
         };
-        Test("-XX:+UseG1GC", "50M", "false", contains6, null);
+        Test("-XX:+UseG1GC", "150M", "false", contains6, null);
         String[] contains7 = {
             "G1_ElasticMaxHeapOp heap after Young GC",
             "GC.elastic_max_heap (4194304K->51200K)(4194304K)",
