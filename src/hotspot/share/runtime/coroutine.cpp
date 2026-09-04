@@ -24,6 +24,7 @@
 
 #include "precompiled.hpp"
 #include "classfile/vmSymbols.hpp"
+#include "code/compiledMethod.hpp"
 #include "interpreter/linkResolver.hpp"
 #include "runtime/coroutine.hpp"
 #include "runtime/globals.hpp"
@@ -385,6 +386,27 @@ public:
 void Coroutine::frames_do(void f(frame*, const RegisterMap* map)) {
   frames_do_Closure fc(f);
   frames_do(&fc);
+}
+
+void Coroutine::deoptimize_marked_methods() {
+  if (_state != _onstack || _stack->last_sp() == NULL) {
+    return;
+  }
+
+  RegisterMap map(_thread, true);
+  frame current = _stack->last_frame(this, map);
+  while (!current.is_first_frame()) {
+    frame sender = current.sender(&map);
+    if (current.should_be_deoptimized()) {
+      CompiledMethod* compiled_method = current.cb()->as_compiled_method();
+      address deopt = compiled_method->is_method_handle_return(current.pc())
+          ? compiled_method->deopt_mh_handler_begin()
+          : compiled_method->deopt_handler_begin();
+      compiled_method->set_original_pc(&current, current.pc());
+      current.patch_pc(_thread, deopt);
+    }
+    current = sender;
+  }
 }
 
 bool Coroutine::is_disposable() {
@@ -1323,4 +1345,3 @@ WispClinitCounterMark::~WispClinitCounterMark() {
     _thread->current_coroutine()->dec_clinit_call_count();
   }
 }
-
